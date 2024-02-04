@@ -1,0 +1,10 @@
+__pycache__/
+.cache
+*.i
+*.ii
+*.gpu
+*.ptx
+*.cubin
+*.fatbin
+build/**
+compile_commands.json
