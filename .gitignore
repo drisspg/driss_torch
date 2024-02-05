@@ -8,3 +8,4 @@ __pycache__/
 *.fatbin
 build/**
 compile_commands.json
+benchmarks/data

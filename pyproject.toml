@@ -18,7 +18,8 @@ classifiers = [
 dependencies = [
     "torch >= 2.2",
     "tqdm",
-    "tabulate"
+    "tabulate",
+    "transformer_nuggets"
 ]
 
 [project.optional-dependencies]

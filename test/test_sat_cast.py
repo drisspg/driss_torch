@@ -15,4 +15,4 @@ def test_cast(num_rows: int, num_cols: int, dtype: torch.dtype):
     cast_pytorch = a.to(dtype)
     cast_custom = saturated_cast(a, dtype)
 
-    torch.testing.assert_close(cast_pytorch, cast_custom)
+    torch.testing.assert_close(cast_custom, cast_pytorch)
