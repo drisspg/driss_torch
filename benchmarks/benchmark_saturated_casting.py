@@ -62,10 +62,9 @@ def get_configs() -> List[ExperimentConfig]:
     sizes = [2**9, 2**10, 2**11, 2**12]
     high_precision_dtypes = [torch.bfloat16]
     low_precision_dtypes = [torch.float8_e4m3fn, torch.float8_e5m2]
-    saturated = [True, False]
     configs = []
-    for size, high_precision_dtype, low_precision_dtype, sat in itertools.product(
-        sizes, high_precision_dtypes, low_precision_dtypes, saturated
+    for size, high_precision_dtype, low_precision_dtype in itertools.product(
+        sizes, high_precision_dtypes, low_precision_dtypes
     ):
         configs.append(
             ExperimentConfig(
