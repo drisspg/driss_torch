@@ -1,16 +1,13 @@
 #include <c10/cuda/CUDAException.h>
-#include <torch/python.h>
 #include <torch/library.h>
+#include <torch/python.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#include "utils.h"
+#include "add.h"
 
 using namespace at;
-
-
-int64_t integer_round(int64_t num, int64_t denom){
-  return (num + denom - 1) / denom;
-}
-
+using namespace driss_torch;
 
 template<class T>
 __global__ void add_one_kernel(const T *const input, T *const output, const int64_t N){
@@ -27,7 +24,7 @@ Tensor add_one(const Tensor &input){
   AT_DISPATCH_ALL_TYPES(
     input.scalar_type(), "add_one_cuda", [&](){
       const auto block_size = 128;
-      const auto num_blocks = std::min(65535L, integer_round(input.numel(), block_size));
+      const auto num_blocks = std::min(65535L, ceil_div(input.numel(), block_size));
       add_one_kernel<<<num_blocks, block_size>>>(
         input.data_ptr<scalar_t>(),
         output.data_ptr<scalar_t>(),
@@ -38,15 +35,4 @@ Tensor add_one(const Tensor &input){
   );
 
   return output;
-}
-
-
-// PYBIND11_MODULE(CudaTorch, m) {
-//     m.doc() = "CudaTorch";e
-//     m.def("add_one", &add_one, "Add one to each element of the input tensor");
-// }
-
-TORCH_LIBRARY(DrissTorch, m) {
-  m.def("add_one(Tensor input) -> Tensor");
-  m.impl("add_one", c10::DispatchKey::CUDA, TORCH_FN(add_one));
 }

@@ -36,6 +36,9 @@ add_library(driss_torch SHARED
     ${SIMPLE_CUDA_CU_SOURCES}
     ${SIMPLE_CUDA_CPP_SOURCES}
 )
+# Add include directories to the library
+target_include_directories(driss_torch PUBLIC src/include)
+
 # target_compile_features(cuda_torch PRIVATE cxx_std_11)
 target_link_libraries(driss_torch PRIVATE ${TORCH_LIBRARIES} Python3::Python)
 

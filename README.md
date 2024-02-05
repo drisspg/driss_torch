@@ -23,6 +23,9 @@ In the python package `driss_torch` there will be small wrappers around the cpp 
 
 Could use .ini but this more fun.
 
+
+#### Tip (Maybe unsafe?)
+The total install command from scratch can take a second. If you want a faster dev flow cd into build and once you change your sources of the lib just run `ninja` to rebuild the shared library. This will not work if you are adding and deleting files.
 ## Intended Usage
 You should be able to grab the ops by doing something like
 
