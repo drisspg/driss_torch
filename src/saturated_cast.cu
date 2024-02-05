@@ -10,7 +10,7 @@
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 
-using namespace driss_torch;
+namespace driss_torch {
 using namespace at;
 
 namespace {
@@ -60,3 +60,5 @@ Tensor saturated_cast(const Tensor &input, ScalarType dtype) {
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return output;
 }
+
+} // namespace driss_torch

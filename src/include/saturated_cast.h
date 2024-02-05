@@ -2,6 +2,7 @@
 
 #include <torch/torch.h>
 
-using namespace at;
+namespace driss_torch {
 
-Tensor saturated_cast(const Tensor &input, ScalarType dtype);
+at::Tensor saturated_cast(const at::Tensor &input, at::ScalarType dtype);
+} // namespace driss_torch

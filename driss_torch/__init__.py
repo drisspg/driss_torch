@@ -11,6 +11,7 @@ ops = torch.ops.DrissTorch
 
 
 def list_ops():
+    raise NotImplementedError("This function does not do what I think it should.")
     return ops.__dir__()
 
 

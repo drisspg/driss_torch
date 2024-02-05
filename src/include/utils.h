@@ -28,4 +28,4 @@ float kernel_time(std::function<void()> kernelLauncher);
 
 } // extern "C"
 
-} // namespace simple_cuda
+} // namespace driss_torch
