@@ -6,6 +6,7 @@ from typing import List
 import torch
 
 from driss_torch import saturated_cast
+from jsonargparse import CLI
 
 from tabulate import tabulate
 from tqdm import tqdm
@@ -151,10 +152,13 @@ def print_results(experiments: List[Experiment]):
     print(tabulate(rows, headers=headers))
 
 
-def main():
+def main(single_run: bool = False):
     torch.random.manual_seed(123)
-    configs = get_configs()
     results = []
+    if single_run:
+        configs = [ExperimentConfig(512, 512, torch.bfloat16, torch.float8_e4m3fn)]
+    else:
+        configs = get_configs()
     for config in tqdm(configs):
         result = run_experiment(config)
         results.append(Experiment(config=config, result=result))
@@ -164,4 +168,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    CLI(main)
