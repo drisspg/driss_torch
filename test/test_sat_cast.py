@@ -21,8 +21,8 @@ def eager_scaled_quant(
     return out.to(fp8_dtype)
 
 
-@pytest.mark.parametrize("num_rows", [64, 512, 4096])
-@pytest.mark.parametrize("num_cols", [512, 3212, 4097])
+@pytest.mark.parametrize("num_rows", [3, 64, 512, 4096])
+@pytest.mark.parametrize("num_cols", [7, 17, 127, 512, 3212, 4097])
 @pytest.mark.parametrize("dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
 def test_cast(num_rows: int, num_cols: int, dtype: torch.dtype):
     # This is a bad test since since the cast is not saturating
@@ -34,4 +34,4 @@ def test_cast(num_rows: int, num_cols: int, dtype: torch.dtype):
     cast_pytorch = eager_scaled_quant(a, abs_max, dtype)
     cast_custom = saturated_cast(a, dtype, abs_max)
 
-    torch.testing.assert_close(cast_custom, cast_pytorch)
+    torch.testing.assert_close(cast_custom.to(torch.float32), cast_pytorch.to(torch.float32))

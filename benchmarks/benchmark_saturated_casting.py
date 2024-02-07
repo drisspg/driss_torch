@@ -64,13 +64,23 @@ def get_configs() -> List[ExperimentConfig]:
     high_precision_dtypes = [torch.bfloat16]
     low_precision_dtypes = [torch.float8_e4m3fn, torch.float8_e5m2]
     configs = []
-    for size, high_precision_dtype, low_precision_dtype in itertools.product(
-        sizes, high_precision_dtypes, low_precision_dtypes
+
+    num_rows_cols = [
+        (512, 512),
+        (1024, 1024),
+        (2048, 2048),
+        (1024, 8192),
+        (8192, 1280),
+        (8192, 7168),
+        (3584, 8192),
+    ]
+    for (rows, cols), high_precision_dtype, low_precision_dtype in itertools.product(
+        num_rows_cols, high_precision_dtypes, low_precision_dtypes
     ):
         configs.append(
             ExperimentConfig(
-                num_rows=size,
-                num_cols=size,
+                num_rows=rows,
+                num_cols=cols,
                 high_precision_dtype=high_precision_dtype,
                 low_precision_dtype=low_precision_dtype,
             )
