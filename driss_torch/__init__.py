@@ -30,7 +30,7 @@ def add_one(x: torch.Tensor) -> torch.Tensor:
 def saturated_cast(
     x: torch.Tensor,
     out_dtype: torch.dtype,
-    scale: Optional[torch.Tensor] = None,
+    scale: torch.Tensor,
     transpose: bool = False,
 ) -> torch.Tensor:
     """This op takes in a tensor and returns the fp8 saturated casted version of it.
