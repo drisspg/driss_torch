@@ -6,6 +6,7 @@ from typing import List
 import torch
 
 from driss_torch import saturated_cast
+from jsonargparse import CLI
 
 from tabulate import tabulate
 from tqdm import tqdm
@@ -82,6 +83,7 @@ def run_experiment(config: ExperimentConfig) -> ExperimentResult:
         config.num_rows, config.num_cols, dtype=config.high_precision_dtype, device=device
     )
     cuda_hp_tensor = high_precision_tensor.clone()
+    cuda_scale = torch.ones(1, dtype=torch.bfloat16, device=device)
 
     eager_abs_max = torch.abs(high_precision_tensor).max().to(torch.float32)
 
@@ -90,7 +92,7 @@ def run_experiment(config: ExperimentConfig) -> ExperimentResult:
     scale = torch.ones(1, dtype=torch.float32, device=device)
 
     # Correctness check:
-    cuda_out = saturated_cast(cuda_hp_tensor, config.low_precision_dtype)
+    cuda_out = saturated_cast(cuda_hp_tensor, config.low_precision_dtype, cuda_scale)
     cuda_out_hp = cuda_out.to(config.high_precision_dtype)
 
     eager_out = eager_scaled_quant(high_precision_tensor, scale, config.low_precision_dtype).to(
@@ -104,6 +106,7 @@ def run_experiment(config: ExperimentConfig) -> ExperimentResult:
         saturated_cast,
         cuda_hp_tensor,
         config.low_precision_dtype,
+        cuda_scale,
     )
     pytorch_time = benchmark_torch_function_in_microseconds(
         eager_scaled_quant,
@@ -151,10 +154,13 @@ def print_results(experiments: List[Experiment]):
     print(tabulate(rows, headers=headers))
 
 
-def main():
+def main(single_run: bool = False):
     torch.random.manual_seed(123)
-    configs = get_configs()
     results = []
+    if single_run:
+        configs = [ExperimentConfig(512, 512, torch.bfloat16, torch.float8_e4m3fn)]
+    else:
+        configs = get_configs()
     for config in tqdm(configs):
         result = run_experiment(config)
         results.append(Experiment(config=config, result=result))
@@ -164,4 +170,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    CLI(main)
