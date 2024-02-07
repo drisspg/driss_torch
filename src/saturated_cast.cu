@@ -62,16 +62,20 @@ void dispatch_best_kernel(const Tensor &input, const Tensor &output,
   const int n_cols = input.size(1);
   const int block_size_x = 32;
   const int block_size_y = 32;
-  const dim3 block(block_size_x, block_size_y);
-  const dim3 grid(ceil_div(n_cols, block_size_x),
-                  ceil_div(n_rows, block_size_y));
   if (n_cols % 2 == 0) {
     // We cast to a 2x8 type, so we need to divide the number of columns by 2
+    const auto packed_col_size = n_cols / 2;
+    const dim3 block(block_size_x, block_size_y);
+    const dim3 grid(ceil_div(packed_col_size, block_size_x),
+                    ceil_div(n_rows, block_size_y));
     saturated_cast_kernel_double<<<grid, block>>>(
         static_cast<nv_bfloat162 *>(input.data_ptr()),
         static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()), n_rows,
-        n_cols / 2, out_dtype, static_cast<nv_bfloat16 *>(scale.data_ptr()));
+        packed_col_size, out_dtype, static_cast<nv_bfloat16 *>(scale.data_ptr()));
   } else {
+    const dim3 block(block_size_x, block_size_y);
+    const dim3 grid(ceil_div(n_cols, block_size_x),
+                  ceil_div(n_rows, block_size_y));
     saturated_cast_kernel_single<<<grid, block>>>(
         static_cast<nv_bfloat16 *>(input.data_ptr()),
         static_cast<__nv_fp8_storage_t *>(output.data_ptr()), n_rows, n_cols,
