@@ -28,11 +28,11 @@ __global__ void saturated_cast_kernel_single(
   }
 }
 
+template<int coarse_factor>
 __global__ void saturated_cast_kernel_double_coalesced(
     nv_bfloat162 const *__restrict input,
     __nv_fp8x2_storage_t *__restrict output, int n_rows, int n_cols,
-    __nv_fp8_interpretation_t out_dtype, nv_bfloat16 const *scaler,
-    const int coarse_factor) {
+    __nv_fp8_interpretation_t out_dtype, nv_bfloat16 const *scaler) {
   int row = blockIdx.y * blockDim.y + threadIdx.y;
   int col = (blockIdx.x * blockDim.x + threadIdx.x) * coarse_factor;
   const int row_stride = n_cols;
@@ -77,11 +77,11 @@ void dispatch_best_kernel(const Tensor &input, const Tensor &output,
     const dim3 block(block_size_x, block_size_y);
     const dim3 grid(ceil_div(packed_col_size, block_size_x * coarse_factor),
                     ceil_div(n_rows, block_size_y));
-    saturated_cast_kernel_double_coalesced<<<grid, block>>>(
+    saturated_cast_kernel_double_coalesced<coarse_factor><<<grid, block>>>(
         static_cast<nv_bfloat162 *>(input.data_ptr()),
         static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()), n_rows,
         packed_col_size, out_dtype,
-        static_cast<nv_bfloat16 *>(scale.data_ptr()), coarse_factor);
+        static_cast<nv_bfloat16 *>(scale.data_ptr()));
   } else {
     const dim3 block(block_size_x, block_size_y);
     const dim3 grid(ceil_div(n_cols, block_size_x),
