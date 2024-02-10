@@ -28,26 +28,40 @@ __global__ void saturated_cast_kernel_single(
   }
 }
 
+template<int coarse_factor>
 __global__ void saturated_cast_kernel_double_coalesced(
     nv_bfloat162 const *__restrict input,
     __nv_fp8x2_storage_t *__restrict output, int n_rows, int n_cols,
-    __nv_fp8_interpretation_t out_dtype, nv_bfloat16 const *scaler,
-    const int coarse_factor) {
+    __nv_fp8_interpretation_t out_dtype, nv_bfloat16 const *scaler) {
   int row = blockIdx.y * blockDim.y + threadIdx.y;
   int col = (blockIdx.x * blockDim.x + threadIdx.x) * coarse_factor;
   const int row_stride = n_cols;
   const int col_stride = 1;
   const nv_bfloat162 scale_2 = {(*scaler), (*scaler)};
-// Assume row major
+
+  nv_bfloat162 scaled_inputs[coarse_factor];
 #pragma unroll
   for (int i{0}; i < coarse_factor; ++i) {
-    col = col + i;
-    if (row < n_rows && col < n_cols) {
-      const int global_index = row * row_stride + col * col_stride;
-      // Need to make a bfloat16x2 from 1 bfloat16
-      const nv_bfloat162 scaled_input = __hmul2(input[global_index], scale_2);
-      output[global_index] = __nv_cvt_bfloat16raw2_to_fp8x2(
-          scaled_input, __nv_saturation_t::__NV_SATFINITE, out_dtype);
+    const int temp_col = col + i;
+    if (row < n_rows && temp_col < n_cols) {
+      scaled_inputs[i] = input[row * row_stride + temp_col * col_stride];
+    }
+  }
+#pragma unroll
+  for (int i{0}; i < coarse_factor; ++i) {
+    const int temp_col = col + i;
+    if (row < n_rows && temp_col < n_cols) {
+      scaled_inputs[i] = __hmul2(scaled_inputs[i], scale_2);
+    }
+  }
+#pragma unroll
+  for (int i{0}; i < coarse_factor; ++i) {
+    const int temp_col = col + i;
+    if (row < n_rows && temp_col < n_cols) {
+      output[row * row_stride + temp_col * col_stride] =
+          __nv_cvt_bfloat16raw2_to_fp8x2(scaled_inputs[i],
+                                         __nv_saturation_t::__NV_SATFINITE,
+                                         out_dtype);
     }
   }
 }
@@ -73,15 +87,16 @@ void dispatch_best_kernel(const Tensor &input, const Tensor &output,
   if (n_cols % 2 == 0) {
     // We cast to a 2x8 type, so we need to divide the number of columns by 2
     const auto packed_col_size = n_cols / 2;
-    const int coarse_factor = 2;
+    // Found 4 to be the best factor for the coalesced kernel
+    const int coarse_factor = 4;
     const dim3 block(block_size_x, block_size_y);
     const dim3 grid(ceil_div(packed_col_size, block_size_x * coarse_factor),
                     ceil_div(n_rows, block_size_y));
-    saturated_cast_kernel_double_coalesced<<<grid, block>>>(
+    saturated_cast_kernel_double_coalesced<coarse_factor><<<grid, block>>>(
         static_cast<nv_bfloat162 *>(input.data_ptr()),
         static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()), n_rows,
         packed_col_size, out_dtype,
-        static_cast<nv_bfloat16 *>(scale.data_ptr()), coarse_factor);
+        static_cast<nv_bfloat16 *>(scale.data_ptr()));
   } else {
     const dim3 block(block_size_x, block_size_y);
     const dim3 grid(ceil_div(n_cols, block_size_x),
