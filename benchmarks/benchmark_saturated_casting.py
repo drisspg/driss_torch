@@ -73,6 +73,10 @@ def get_configs() -> List[ExperimentConfig]:
         (8192, 1280),
         (8192, 7168),
         (3584, 8192),
+        (2048, 109760),
+        (1, 3232),
+        (2048, 1),
+        (14144, 2048),
     ]
     for (rows, cols), high_precision_dtype, low_precision_dtype in itertools.product(
         num_rows_cols, high_precision_dtypes, low_precision_dtypes
