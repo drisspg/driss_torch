@@ -12,7 +12,7 @@ all the things that I wanna try.
 pip install scikit_build_core
 pip install pyproject-metadata
 
-# Install in executable mode
+# Install in editable mode
 pip install -v --no-build-isolation -e .
 ```
 
