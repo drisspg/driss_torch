@@ -9,35 +9,64 @@
 
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
+#include <type_traits>
 
 namespace driss_torch {
 using namespace at;
 
 namespace {
+
+#define DISPATCH_KERNEL_SINGLE(T)                                              \
+  saturated_cast_kernel_single<T><<<grid, block>>>(                            \
+      static_cast<T *>(input.data_ptr()),                                      \
+      static_cast<__nv_fp8_storage_t *>(output.data_ptr()), n_rows, n_cols,    \
+      out_dtype, static_cast<T *>(scale.data_ptr()))
+
+#define DISPATCH_KERNEL_DOUBLE_COALESCED(T2, T)                                \
+  saturated_cast_kernel_double_coalesced<coarse_factor, T2, T>                 \
+      <<<grid, block>>>(                                                       \
+          static_cast<T2 *>(input.data_ptr()),                                 \
+          static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()), n_rows,      \
+          n_cols, out_dtype, static_cast<T *>(scale.data_ptr()))
+
+#define DISPATCH_KERNEL_DOUBLE_COALESCED_FLAT(T2, T)                           \
+  saturated_cast_kernel_double_coalesced_flat<coarse_factor, T2, T>            \
+      <<<grid, block>>>(                                                       \
+          static_cast<T2 *>(input.data_ptr()),                                 \
+          static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()),              \
+          packed_numel, out_dtype, static_cast<T *>(scale.data_ptr()))
+
+template <typename HPType>
 __global__ void saturated_cast_kernel_single(
-    nv_bfloat16 *input, __nv_fp8_storage_t *output, int n_rows, int n_cols,
-    __nv_fp8_interpretation_t out_dtype, nv_bfloat16 *scaler) {
+    HPType *input, __nv_fp8_storage_t *output, int n_rows, int n_cols,
+    __nv_fp8_interpretation_t out_dtype, HPType *scaler) {
   int row = blockIdx.y * blockDim.y + threadIdx.y;
   int col = blockIdx.x * blockDim.x + threadIdx.x;
   // Assume row major
   const int global_index = row * n_cols + col;
   if (row < n_rows && col < n_cols) {
-    const nv_bfloat16 scaled_input = __hmul(input[global_index], (*scaler));
-    output[global_index] = __nv_cvt_bfloat16raw_to_fp8(
-        scaled_input, __nv_saturation_t::__NV_SATFINITE, out_dtype);
+    if constexpr (std::is_same_v<HPType, nv_bfloat162>) {
+      const HPType scaled_input = __hmul(input[global_index], (*scaler));
+      output[global_index] = __nv_cvt_bfloat16raw_to_fp8(
+          scaled_input, __nv_saturation_t::__NV_SATFINITE, out_dtype);
+    } else {
+      const HPType scaled_input = input[global_index] * (*scaler);
+      output[global_index] = __nv_cvt_float_to_fp8(
+          scaled_input, __nv_saturation_t::__NV_SATFINITE, out_dtype);
+    }
   }
 }
 
-template <int coarse_factor>
+template <int coarse_factor, typename PackedHPType, typename HPType>
 __global__ void saturated_cast_kernel_double_coalesced_flat(
-    nv_bfloat162 const *__restrict input,
+    PackedHPType const *__restrict input,
     __nv_fp8x2_storage_t *__restrict output, const int numels,
-    __nv_fp8_interpretation_t out_dtype, nv_bfloat16 const *scaler) {
+    __nv_fp8_interpretation_t out_dtype, HPType const *scaler) {
   const int idx = (blockIdx.x * blockDim.x + threadIdx.x) * coarse_factor;
   const int stride = 1;
-  const nv_bfloat162 scale_2 = {(*scaler), (*scaler)};
+  const PackedHPType scale_2 = {(*scaler), (*scaler)};
 
-  nv_bfloat162 scaled_inputs[coarse_factor];
+  PackedHPType scaled_inputs[coarse_factor];
 #pragma unroll
   for (int i{0}; i < coarse_factor; ++i) {
     const int temp_idx = idx + i;
@@ -49,31 +78,44 @@ __global__ void saturated_cast_kernel_double_coalesced_flat(
   for (int i{0}; i < coarse_factor; ++i) {
     const int temp_idx = idx + i;
     if (temp_idx < numels) {
-      scaled_inputs[i] = __hmul2(scaled_inputs[i], scale_2);
+      if constexpr (std::is_same_v<PackedHPType, nv_bfloat162>) {
+        scaled_inputs[i] = __hmul2(scaled_inputs[i], scale_2);
+      } else {
+        // I can't find the right fmul2 fo this??
+        scaled_inputs[i] = {scaled_inputs[i].x * (*scaler),
+                            scaled_inputs[i].y * (*scaler)};
+      }
     }
   }
 #pragma unroll
   for (int i{0}; i < coarse_factor; ++i) {
     const int temp_idx = idx + i;
     if (temp_idx < numels) {
-      output[temp_idx * stride] = __nv_cvt_bfloat16raw2_to_fp8x2(
-          scaled_inputs[i], __nv_saturation_t::__NV_SATFINITE, out_dtype);
+      __nv_fp8x2_storage_t out;
+      if constexpr (std::is_same_v<PackedHPType, nv_bfloat162>) {
+        out = __nv_cvt_bfloat16raw2_to_fp8x2(
+            scaled_inputs[i], __nv_saturation_t::__NV_SATFINITE, out_dtype);
+      } else {
+        out = __nv_cvt_float2_to_fp8x2(
+            scaled_inputs[i], __nv_saturation_t::__NV_SATFINITE, out_dtype);
+      }
+      output[temp_idx * stride] = out;
     }
   }
 }
 
-template <int coarse_factor>
+template <int coarse_factor, typename PackedHPType, typename HPType>
 __global__ void saturated_cast_kernel_double_coalesced(
-    nv_bfloat162 const *__restrict input,
+    PackedHPType const *__restrict input,
     __nv_fp8x2_storage_t *__restrict output, int n_rows, int n_cols,
-    __nv_fp8_interpretation_t out_dtype, nv_bfloat16 const *scaler) {
+    __nv_fp8_interpretation_t out_dtype, HPType const *scaler) {
   int row = blockIdx.y * blockDim.y + threadIdx.y;
   int col = (blockIdx.x * blockDim.x + threadIdx.x) * coarse_factor;
   const int row_stride = n_cols;
   const int col_stride = 1;
-  const nv_bfloat162 scale_2 = {(*scaler), (*scaler)};
+  const PackedHPType scale_2 = {(*scaler), (*scaler)};
 
-  nv_bfloat162 scaled_inputs[coarse_factor];
+  PackedHPType scaled_inputs[coarse_factor];
 #pragma unroll
   for (int i{0}; i < coarse_factor; ++i) {
     const int temp_col = col + i;
@@ -85,16 +127,28 @@ __global__ void saturated_cast_kernel_double_coalesced(
   for (int i{0}; i < coarse_factor; ++i) {
     const int temp_col = col + i;
     if (row < n_rows && temp_col < n_cols) {
-      scaled_inputs[i] = __hmul2(scaled_inputs[i], scale_2);
+      if constexpr (std::is_same_v<PackedHPType, nv_bfloat162>) {
+        scaled_inputs[i] = __hmul2(scaled_inputs[i], scale_2);
+      } else {
+        // I can't find the right fmul2 fo this??
+        scaled_inputs[i] = {scaled_inputs[i].x * (*scaler),
+                            scaled_inputs[i].y * (*scaler)};
+      }
     }
   }
 #pragma unroll
   for (int i{0}; i < coarse_factor; ++i) {
     const int temp_col = col + i;
     if (row < n_rows && temp_col < n_cols) {
-      output[row * row_stride + temp_col * col_stride] =
-          __nv_cvt_bfloat16raw2_to_fp8x2(
-              scaled_inputs[i], __nv_saturation_t::__NV_SATFINITE, out_dtype);
+      __nv_fp8x2_storage_t out;
+      if constexpr (std::is_same_v<PackedHPType, nv_bfloat162>) {
+        out = __nv_cvt_bfloat16raw2_to_fp8x2(
+            scaled_inputs[i], __nv_saturation_t::__NV_SATFINITE, out_dtype);
+      } else {
+        out = __nv_cvt_float2_to_fp8x2(
+            scaled_inputs[i], __nv_saturation_t::__NV_SATFINITE, out_dtype);
+      }
+      output[row * row_stride + temp_col * col_stride] = out;
     }
   }
 }
@@ -110,6 +164,8 @@ __nv_fp8_interpretation_t dtype_map(const ScalarType dtype) {
   }
 }
 
+enum KernelChoice { single, coalesced, coalesced_flat };
+
 void dispatch_best_kernel(const Tensor &input, const Tensor &output,
                           __nv_fp8_interpretation_t out_dtype,
                           const Tensor &scale, bool transpose) {
@@ -118,24 +174,25 @@ void dispatch_best_kernel(const Tensor &input, const Tensor &output,
   const int block_size_x = 32;
   const int block_size_y = 32;
   const auto numel = input.numel();
-  int kernel_choice = 0;
+  int kernel_choice = KernelChoice::single;
   if (numel % 2 == 0 && !transpose) {
-    kernel_choice = 2;
+    kernel_choice = KernelChoice::coalesced_flat;
   } else if (n_cols % 2 == 0) {
-    kernel_choice = 1;
+    kernel_choice = KernelChoice::coalesced;
   }
   switch (kernel_choice) {
-  case 0: {
+  case KernelChoice::single: {
     const dim3 block(block_size_x, block_size_y);
     const dim3 grid(ceil_div(n_cols, block_size_x),
                     ceil_div(n_rows, block_size_y));
-    saturated_cast_kernel_single<<<grid, block>>>(
-        static_cast<nv_bfloat16 *>(input.data_ptr()),
-        static_cast<__nv_fp8_storage_t *>(output.data_ptr()), n_rows, n_cols,
-        out_dtype, static_cast<nv_bfloat16 *>(scale.data_ptr()));
+    if (input.scalar_type() == at::kBFloat16) {
+      DISPATCH_KERNEL_SINGLE(nv_bfloat16);
+    } else if (input.scalar_type() == at::kFloat) {
+      DISPATCH_KERNEL_SINGLE(float);
+    }
     break;
   }
-  case 1: {
+  case KernelChoice::coalesced: {
     // / We cast to a 16x2 type, so we need to divide the number of columns by 2
     const auto packed_col_size = n_cols / 2;
     // Found 4 to be the best factor for the coalesced kernel
@@ -143,23 +200,24 @@ void dispatch_best_kernel(const Tensor &input, const Tensor &output,
     const dim3 block(block_size_x, block_size_y);
     const dim3 grid(ceil_div(packed_col_size, block_size_x * coarse_factor),
                     ceil_div(n_rows, block_size_y));
-    saturated_cast_kernel_double_coalesced<coarse_factor><<<grid, block>>>(
-        static_cast<nv_bfloat162 *>(input.data_ptr()),
-        static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()), n_rows,
-        packed_col_size, out_dtype,
-        static_cast<nv_bfloat16 *>(scale.data_ptr()));
+    if (input.scalar_type() == at::kBFloat16) {
+      DISPATCH_KERNEL_DOUBLE_COALESCED(nv_bfloat162, nv_bfloat16);
+    } else if (input.scalar_type() == at::kFloat) {
+      DISPATCH_KERNEL_DOUBLE_COALESCED(float2, float);
+    }
     break;
   }
-  case 2: {
+  case KernelChoice::coalesced_flat: {
     const int coarse_factor = 4;
     const dim3 block(256);
     const int packed_numel = numel / 2;
     // We divide numel by 2 because we are casting to a 16x2 type
     const dim3 grid(ceil_div(packed_numel, block.x * coarse_factor));
-    saturated_cast_kernel_double_coalesced_flat<coarse_factor><<<grid, block>>>(
-        static_cast<nv_bfloat162 *>(input.data_ptr()),
-        static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()), packed_numel,
-        out_dtype, static_cast<nv_bfloat16 *>(scale.data_ptr()));
+    if (input.scalar_type() == at::kBFloat16) {
+      DISPATCH_KERNEL_DOUBLE_COALESCED_FLAT(nv_bfloat162, nv_bfloat16);
+    } else if (input.scalar_type() == at::kFloat) {
+      DISPATCH_KERNEL_DOUBLE_COALESCED_FLAT(float2, float);
+    }
     break;
   }
   }
@@ -173,10 +231,12 @@ Tensor saturated_cast(const Tensor &input, ScalarType dtype,
               "Output tensor must be of type Float8_e4m3fn or Float8_e5m2")
   auto output = torch::empty(input.sizes(), input.options().dtype(dtype));
 
-  TORCH_CHECK(input.scalar_type() == at::kBFloat16,
-              "Input tensor must be of type BFloat16");
-  TORCH_CHECK(scale.scalar_type() == at::kBFloat16,
-              "Scale must be of type BFloat16");
+  TORCH_CHECK(input.scalar_type() == at::kBFloat16 ||
+                  input.scalar_type() == at::kFloat,
+              "Input tensor must be of type BFloat16 or Float");
+  TORCH_CHECK(scale.scalar_type() == input.scalar_type(),
+              "Scale tensor must have the same type as input tensor")
+
   dispatch_best_kernel(input, output, dtype_map(dtype), scale, transpose);
   return output;
 }
