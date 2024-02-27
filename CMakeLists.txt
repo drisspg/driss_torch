@@ -24,7 +24,6 @@ set(TMP_STORE_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH};${PT_CMAKE_PREFIX})
 
 find_package(Torch REQUIRED CONFIG)
-# set(CMAKE_CUDA_ARCHITECTURES ${TMP_STORE_CUDA_ARCHITECTURES})
 
 #  simple_cuda source files
 file(GLOB_RECURSE SIMPLE_CUDA_CU_SOURCES src/*.cu)
@@ -41,9 +40,3 @@ target_include_directories(driss_torch PUBLIC src/include)
 
 # target_compile_features(cuda_torch PRIVATE cxx_std_11)
 target_link_libraries(driss_torch PRIVATE ${TORCH_LIBRARIES} Python3::Python)
-
-# Use if the default GCC version gives issues
-# target_compile_options(driss_torch PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-ccbin g++-9>)
-
-# Use a variant of this if you're on an earlier cmake than 3.18
-# target_compile_options(pytorch_cmake_example PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-gencode arch=compute_61,code=sm_61>)
