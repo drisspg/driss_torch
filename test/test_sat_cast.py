@@ -1,6 +1,7 @@
 import pytest
 import torch
 from driss_torch import saturated_cast
+from float8_experimental.float8_utils import tensor_to_scale
 
 
 def eager_scaled_quant(
@@ -30,9 +31,26 @@ def test_cast(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: to
     # but torch.rand is gaussian(0, 1) so it should be fine and we wont
     # exceed the range but we should do this right.
     a = torch.rand(num_rows, num_cols, dtype=in_dtype, device="cuda")
-    abs_max = torch.max(torch.abs(a)).to(torch.float32)
+    scale = tensor_to_scale(a, fp8_dtype)
 
-    cast_pytorch = eager_scaled_quant(a, abs_max, fp8_dtype)
-    cast_custom = saturated_cast(a, fp8_dtype, abs_max)
+    cast_pytorch = eager_scaled_quant(a, scale, fp8_dtype)
+    cast_custom = saturated_cast(a, scale, fp8_dtype)
 
-    torch.testing.assert_close(cast_custom.to(torch.float32), cast_pytorch.to(torch.float32))
+    custom_fp32 = cast_custom.to(torch.float32)
+    pytorch_fp32 = cast_pytorch.to(torch.float32)
+    torch.testing.assert_close(custom_fp32, pytorch_fp32)
+
+
+@pytest.mark.xfail(reason="This test is failing, we need to investigate", strict=True)
+def test_cast_edge_bug():
+    a = torch.Tensor([0.3223, 0.3223]).to(device="cuda", dtype=torch.bfloat16).view(2, 1)
+    scale = torch.Tensor([57344.0]).to("cuda")
+    cast_pytorch = eager_scaled_quant(a, scale, torch.float8_e5m2)
+    cast_custom = saturated_cast(a, scale, torch.float8_e5m2)
+
+    custom_fp32 = cast_custom.to(torch.float32)
+    pytorch_fp32 = cast_pytorch.to(torch.float32)
+    MAX_P_output = a.to(torch.float64) * scale.to(torch.float64)
+    print("Custom diff is ", torch.max(torch.abs(MAX_P_output - custom_fp32)))
+    print("PyTorch diff is ", torch.max(torch.abs(MAX_P_output - pytorch_fp32)))
+    torch.testing.assert_close(custom_fp32, pytorch_fp32)

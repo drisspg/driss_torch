@@ -29,8 +29,8 @@ def add_one(x: torch.Tensor) -> torch.Tensor:
 
 def saturated_cast(
     x: torch.Tensor,
-    out_dtype: torch.dtype,
     scale: torch.Tensor,
+    out_dtype: torch.dtype,
     transpose: bool = False,
 ) -> torch.Tensor:
     """This op takes in a tensor and returns the fp8 saturated casted version of it.
@@ -43,4 +43,4 @@ def saturated_cast(
     Returns:
         The output tensor.
     """
-    return ops.saturated_cast(x, out_dtype, scale, transpose)
+    return ops.saturated_cast(x, scale, out_dtype, transpose)
