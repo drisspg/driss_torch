@@ -225,11 +225,10 @@ void dispatch_best_kernel(const Tensor &input, const Tensor &output,
 }
 } // namespace
 
-Tensor saturated_cast(const Tensor &input, ScalarType dtype,
+Tensor saturated_cast_meta(const Tensor &input, ScalarType dtype,
                       const Tensor &scale, bool transpose) {
   TORCH_CHECK(dtype == at::kFloat8_e4m3fn || dtype == at::kFloat8_e5m2,
               "Output tensor must be of type Float8_e4m3fn or Float8_e5m2")
-  auto output = torch::empty_like(input, input.options().dtype(dtype));
 
   TORCH_CHECK(input.scalar_type() == at::kBFloat16 ||
                   input.scalar_type() == at::kFloat,
@@ -237,6 +236,22 @@ Tensor saturated_cast(const Tensor &input, ScalarType dtype,
   TORCH_CHECK(scale.scalar_type() == at::kFloat,
               "Scale tensor must be of type Float, but got ", scale.dtype())
 
+  auto output = torch::empty_like(input, input.options().dtype(dtype));
+  return output;
+}
+
+Tensor saturated_cast(const Tensor &input, ScalarType dtype,
+                      const Tensor &scale, bool transpose) {
+  TORCH_CHECK(dtype == at::kFloat8_e4m3fn || dtype == at::kFloat8_e5m2,
+              "Output tensor must be of type Float8_e4m3fn or Float8_e5m2")
+
+  TORCH_CHECK(input.scalar_type() == at::kBFloat16 ||
+                  input.scalar_type() == at::kFloat,
+              "Input tensor must be of type BFloat16 or Float, but got ", input.dtype());
+  TORCH_CHECK(scale.scalar_type() == at::kFloat,
+              "Scale tensor must be of type Float, but got ", scale.dtype())
+
+  auto output = torch::empty_like(input, input.options().dtype(dtype));
   dispatch_best_kernel(input, output, dtype_map(dtype), scale, transpose);
   return output;
 }
