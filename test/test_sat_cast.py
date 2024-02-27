@@ -36,4 +36,17 @@ def test_cast(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: to
     cast_pytorch = eager_scaled_quant(a, scale, fp8_dtype)
     cast_custom = saturated_cast(a, scale, fp8_dtype)
 
-    torch.testing.assert_close(cast_custom.to(torch.float32), cast_pytorch.to(torch.float32))
+    custom_fp32 = cast_custom.to(torch.float32)
+    pytorch_fp32 = cast_pytorch.to(torch.float32)
+    torch.testing.assert_close(custom_fp32, pytorch_fp32)
+
+
+def test_cast_edge_bug():
+    a = torch.Tensor([0.3223, 0.3223]).to(device="cuda", dtype=torch.bfloat16).view(2, 1)
+    scale = torch.Tensor([57344.0]).to("cuda")
+    cast_pytorch = eager_scaled_quant(a, scale, torch.float8_e5m2)
+    cast_custom = saturated_cast(a, scale, torch.float8_e5m2)
+
+    custom_fp32 = cast_custom.to(torch.float32)
+    pytorch_fp32 = cast_pytorch.to(torch.float32)
+    torch.testing.assert_close(custom_fp32, pytorch_fp32)
