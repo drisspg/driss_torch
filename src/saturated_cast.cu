@@ -22,17 +22,16 @@ namespace {
       static_cast<__nv_fp8_storage_t *>(output.data_ptr()), n_rows, n_cols,    \
       out_dtype, static_cast<float *>(scale.data_ptr()))
 
-#define DISPATCH_KERNEL_DOUBLE_COALESCED(T)                                \
-  saturated_cast_kernel_double_coalesced<coarse_factor, T>                 \
-      <<<grid, block>>>(                                                       \
-          static_cast<T *>(input.data_ptr()),                                 \
-          static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()), n_rows,      \
-          n_cols, out_dtype, static_cast<float *>(scale.data_ptr()))
+#define DISPATCH_KERNEL_DOUBLE_COALESCED(T)                                    \
+  saturated_cast_kernel_double_coalesced<coarse_factor, T><<<grid, block>>>(   \
+      static_cast<T *>(input.data_ptr()),                                      \
+      static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()), n_rows, n_cols,  \
+      out_dtype, static_cast<float *>(scale.data_ptr()))
 
-#define DISPATCH_KERNEL_DOUBLE_COALESCED_FLAT(T)                           \
-  saturated_cast_kernel_double_coalesced_flat<coarse_factor, T>            \
+#define DISPATCH_KERNEL_DOUBLE_COALESCED_FLAT(T)                               \
+  saturated_cast_kernel_double_coalesced_flat<coarse_factor, T>                \
       <<<grid, block>>>(                                                       \
-          static_cast<T *>(input.data_ptr()),                                 \
+          static_cast<T *>(input.data_ptr()),                                  \
           static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()),              \
           packed_numel, out_dtype, static_cast<float *>(scale.data_ptr()))
 
@@ -225,14 +224,15 @@ void dispatch_best_kernel(const Tensor &input, const Tensor &output,
 }
 } // namespace
 
-Tensor saturated_cast_meta(const Tensor &input, ScalarType dtype,
-                      const Tensor &scale, bool transpose) {
+Tensor saturated_cast_meta(const Tensor &input, const Tensor &scale,
+                           ScalarType dtype, bool transpose) {
   TORCH_CHECK(dtype == at::kFloat8_e4m3fn || dtype == at::kFloat8_e5m2,
               "Output tensor must be of type Float8_e4m3fn or Float8_e5m2")
 
   TORCH_CHECK(input.scalar_type() == at::kBFloat16 ||
                   input.scalar_type() == at::kFloat,
-              "Input tensor must be of type BFloat16 or Float, but got ", input.dtype());
+              "Input tensor must be of type BFloat16 or Float, but got ",
+              input.dtype());
   TORCH_CHECK(scale.scalar_type() == at::kFloat,
               "Scale tensor must be of type Float, but got ", scale.dtype())
 
@@ -240,14 +240,15 @@ Tensor saturated_cast_meta(const Tensor &input, ScalarType dtype,
   return output;
 }
 
-Tensor saturated_cast(const Tensor &input, ScalarType dtype,
-                      const Tensor &scale, bool transpose) {
+Tensor saturated_cast(const Tensor &input, const Tensor &scale,
+                      ScalarType dtype, bool transpose) {
   TORCH_CHECK(dtype == at::kFloat8_e4m3fn || dtype == at::kFloat8_e5m2,
               "Output tensor must be of type Float8_e4m3fn or Float8_e5m2")
 
   TORCH_CHECK(input.scalar_type() == at::kBFloat16 ||
                   input.scalar_type() == at::kFloat,
-              "Input tensor must be of type BFloat16 or Float, but got ", input.dtype());
+              "Input tensor must be of type BFloat16 or Float, but got ",
+              input.dtype());
   TORCH_CHECK(scale.scalar_type() == at::kFloat,
               "Scale tensor must be of type Float, but got ", scale.dtype())
 

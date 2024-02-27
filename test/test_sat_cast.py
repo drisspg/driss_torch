@@ -1,6 +1,7 @@
 import pytest
 import torch
 from driss_torch import saturated_cast
+from float8_experimental.float8_utils import tensor_to_scale
 
 
 def eager_scaled_quant(
@@ -30,9 +31,9 @@ def test_cast(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: to
     # but torch.rand is gaussian(0, 1) so it should be fine and we wont
     # exceed the range but we should do this right.
     a = torch.rand(num_rows, num_cols, dtype=in_dtype, device="cuda")
-    abs_max = torch.max(torch.abs(a)).to(torch.float32)
+    scale = tensor_to_scale(a, fp8_dtype)
 
-    cast_pytorch = eager_scaled_quant(a, abs_max, fp8_dtype)
-    cast_custom = saturated_cast(a, fp8_dtype, abs_max)
+    cast_pytorch = eager_scaled_quant(a, scale, fp8_dtype)
+    cast_custom = saturated_cast(a, scale, fp8_dtype)
 
     torch.testing.assert_close(cast_custom.to(torch.float32), cast_pytorch.to(torch.float32))
