@@ -49,4 +49,7 @@ def test_cast_edge_bug():
 
     custom_fp32 = cast_custom.to(torch.float32)
     pytorch_fp32 = cast_pytorch.to(torch.float32)
+    MAX_P_output = a.to(torch.float64) * scale.to(torch.float64)
+    print("Custom diff is ", torch.max(torch.abs(MAX_P_output - custom_fp32)))
+    print("PyTorch diff is ", torch.max(torch.abs(MAX_P_output - pytorch_fp32)))
     torch.testing.assert_close(custom_fp32, pytorch_fp32)
