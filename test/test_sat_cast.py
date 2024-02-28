@@ -43,7 +43,7 @@ def test_cast(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: to
 
 @pytest.mark.xfail(reason="This test is failing, we need to investigate", strict=True)
 def test_cast_edge_bug():
-    a = torch.Tensor([0.3223, 0.3223]).to(device="cuda", dtype=torch.bfloat16).view(2, 1)
+    a = torch.Tensor([0.3223, 0.3223, 0.3223]).to(device="cuda", dtype=torch.bfloat16).view(2, 1)
     scale = torch.Tensor([57344.0]).to("cuda")
     cast_pytorch = eager_scaled_quant(a, scale, torch.float8_e5m2)
     cast_custom = saturated_cast(a, scale, torch.float8_e5m2)
@@ -53,4 +53,6 @@ def test_cast_edge_bug():
     MAX_P_output = a.to(torch.float64) * scale.to(torch.float64)
     print("Custom diff is ", torch.max(torch.abs(MAX_P_output - custom_fp32)))
     print("PyTorch diff is ", torch.max(torch.abs(MAX_P_output - pytorch_fp32)))
+    # The closest bit pattern is 0|11101|01 = 20480.0
+    # Custom is producing 0|11101|00 = 16384.0 which is wrong unless rounding toward zero is set
     torch.testing.assert_close(custom_fp32, pytorch_fp32)
