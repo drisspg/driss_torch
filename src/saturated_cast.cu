@@ -251,9 +251,19 @@ Tensor saturated_cast(const Tensor &input, const Tensor &scale,
               input.dtype());
   TORCH_CHECK(scale.scalar_type() == at::kFloat,
               "Scale tensor must be of type Float, but got ", scale.dtype())
+  TORCH_CHECK(input.dim() == 2, "Input tensor must be 2D, but got ", input.dim());
+  TORCH_CHECK(scale.numel() == 1, "Scale tensor must be a scalar, but got ",
+              scale.numel());
 
-  auto output = torch::empty_like(input, input.options().dtype(dtype));
-  dispatch_best_kernel(input, output, dtype_map(dtype), scale, transpose);
+  // Input must either be transposed or contiguous
+  auto strides = input.strides();
+  bool is_contiguous = input.is_contiguous();
+  bool is_transposed = strides[0] == 1 && strides[1] == input.size(0);
+  bool check_allowed_strides =  (is_contiguous || is_transposed) && input.storage_offset() == 0 ;
+  auto contig_input = check_allowed_strides ? input : input.contiguous();
+
+  auto output = torch::empty_like(contig_input, contig_input.options().dtype(dtype));
+  dispatch_best_kernel(contig_input, output, dtype_map(dtype), scale, transpose);
   return output;
 }
 
