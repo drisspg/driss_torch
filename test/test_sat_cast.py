@@ -27,9 +27,6 @@ def eager_scaled_quant(
 @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
 @pytest.mark.parametrize("in_dtype", [torch.bfloat16, torch.float32])
 def test_cast(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: torch.dtype):
-    # This is a bad test since since the cast is not saturating
-    # but torch.rand is gaussian(0, 1) so it should be fine and we wont
-    # exceed the range but we should do this right.
     a = torch.rand(num_rows, num_cols, dtype=in_dtype, device="cuda")
     scale = tensor_to_scale(a, fp8_dtype)
 
@@ -39,6 +36,24 @@ def test_cast(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: to
     custom_fp32 = cast_custom.to(torch.float32)
     pytorch_fp32 = cast_pytorch.to(torch.float32)
     torch.testing.assert_close(custom_fp32, pytorch_fp32)
+
+
+@pytest.mark.parametrize("num_rows", [3, 64, 512, 4096])
+@pytest.mark.parametrize("num_cols", [7, 17, 127, 512, 3212, 4097])
+@pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+@pytest.mark.parametrize("in_dtype", [torch.bfloat16, torch.float32])
+def test_cast_compile(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: torch.dtype):
+    torch._dynamo.reset()
+    a = torch.rand(num_rows, num_cols, dtype=in_dtype, device="cuda")
+    scale = tensor_to_scale(a, fp8_dtype)
+
+    cast_custom_compile_func = torch.compile(saturated_cast, fullgraph=True)
+    cast_custom = saturated_cast(a, scale, fp8_dtype)
+    cast_custom_compile = cast_custom_compile_func(a, scale, fp8_dtype)
+
+    custom_fp32 = cast_custom.to(torch.float32)
+    custom_compile_fp32 = cast_custom_compile.to(torch.float32)
+    torch.testing.assert_close(custom_fp32, custom_compile_fp32)
 
 
 @pytest.mark.xfail(reason="This test is failing, we need to investigate", strict=True)
