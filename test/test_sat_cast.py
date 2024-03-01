@@ -1,7 +1,7 @@
 import pytest
 import torch
-from driss_torch import saturated_cast
-from float8_experimental.float8_utils import tensor_to_scale
+from driss_torch import saturated_cast, saturated_cast_amax
+from float8_experimental.float8_utils import tensor_to_amax, tensor_to_scale
 
 
 def eager_scaled_quant(
@@ -71,3 +71,35 @@ def test_cast_edge_bug():
     # The closest bit pattern is 0|11101|01 = 20480.0
     # Custom is producing 0|11101|00 = 16384.0 which is wrong unless rounding toward zero is set
     torch.testing.assert_close(custom_fp32, pytorch_fp32)
+
+
+@pytest.mark.parametrize("num_rows", [3, 64, 512, 4096])
+@pytest.mark.parametrize("num_cols", [7, 17, 127, 512, 3212, 4097])
+@pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+@pytest.mark.parametrize("in_dtype", [torch.bfloat16, torch.float32])
+def test_cast_amax(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: torch.dtype):
+    torch.manual_seed(0)
+    a = torch.rand(num_rows, num_cols, dtype=in_dtype, device="cuda")
+    amax = tensor_to_amax(a).to(torch.float32)
+    scale = tensor_to_scale(a, fp8_dtype)
+
+    cast_pytorch = eager_scaled_quant(a, scale, fp8_dtype)
+    cast_custom = saturated_cast(a, scale, fp8_dtype)
+    cast_custom_amax = saturated_cast_amax(a, amax, fp8_dtype)
+
+    custom_fp32 = cast_custom.to(torch.float32)
+    pytorch_fp32 = cast_pytorch.to(torch.float32)
+    cast_custom_amax_fp32 = cast_custom_amax.to(torch.float32)
+
+    torch.testing.assert_close(custom_fp32, pytorch_fp32)
+    torch.testing.assert_close(cast_custom_amax_fp32, pytorch_fp32, atol=1e-5, rtol=0.25)
+    #  I worked through examples and I am pretty convinced that the fused kernel is more accurate than
+    # eager pytorch
+    # The fused kernel says that scaler: 57344.066406 is an example of a scale when the amax is 0.9999988675117493
+    # while eager pytorch says 57344.0703125
+    # The actual value is 57344.0 / 0.9999988675117493 = 57344.064941479795
+    # The difference for the fused kernel is 0.00146 and for pytorch it is: 0.00537
+    # The unfortunate thing is that since we then take this scale and multiply it by the input tensor, and
+    # convert to fp8e4 or fp8e5 there will be values that get braodcasted near the end of the of range where small
+    # epsilon in scale can cause a large difference in the fp8 tensor since the dynamic range is so small at the
+    # end of the range.
