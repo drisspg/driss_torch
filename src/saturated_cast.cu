@@ -20,36 +20,36 @@ namespace {
   saturated_cast_kernel_single<T><<<grid, block>>>(                            \
       static_cast<T *>(input.data_ptr()),                                      \
       static_cast<__nv_fp8_storage_t *>(output.data_ptr()), n_rows, n_cols,    \
-      out_dtype, static_cast<float *>(scale.data_ptr()))
+      out_dtype, static_cast<float *>(amax.data_ptr()))
 
 #define DISPATCH_KERNEL_DOUBLE_COALESCED(T)                                    \
   saturated_cast_kernel_double_coalesced<coarse_factor, T><<<grid, block>>>(   \
       static_cast<T *>(input.data_ptr()),                                      \
       static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()), n_rows, n_cols,  \
-      out_dtype, static_cast<float *>(scale.data_ptr()))
+      out_dtype, static_cast<float *>(amax.data_ptr()))
 
 #define DISPATCH_KERNEL_DOUBLE_COALESCED_FLAT(T)                               \
   saturated_cast_kernel_double_coalesced_flat<coarse_factor, T>                \
       <<<grid, block>>>(                                                       \
           static_cast<T *>(input.data_ptr()),                                  \
           static_cast<__nv_fp8x2_storage_t *>(output.data_ptr()),              \
-          packed_numel, out_dtype, static_cast<float *>(scale.data_ptr()))
+          packed_numel, out_dtype, static_cast<float *>(amax.data_ptr()))
+
+float __forceinline__ __device__ get_dtype_max( __nv_fp8_interpretation_t out_dtype){
+  return out_dtype == __nv_fp8_interpretation_t::__NV_E4M3 ? 448.0f: 57344.0f;
+}
 
 template <typename HPType>
-__global__ void saturated_cast_kernel_single_amax(
+__global__ void saturated_cast_kernel_single(
     HPType *input, __nv_fp8_storage_t *output, int n_rows, int n_cols,
     __nv_fp8_interpretation_t out_dtype, float *amax) {
   int row = blockIdx.y * blockDim.y + threadIdx.y;
   int col = blockIdx.x * blockDim.x + threadIdx.x;
   // Assume row major
-  float dtype_max = out_dtype == __nv_fp8_interpretation_t::__NV_E4M3 ? 448.0f: 57344.0f;
+  const float dtype_max = get_dtype_max(out_dtype);
   const int global_index = row * n_cols + col;
   if (row < n_rows && col < n_cols) {
     const float scaler = dtype_max / std::max((*amax), 1e-12f);
-    thread_zero_print("scaler: %f\n", scaler);
-    // if (threadIdx.x == 0 && blockIdx.x == 0) {
-    //   printf("scaler: %f\n", scaler);
-    // }
     if constexpr (std::is_same_v<HPType, nv_bfloat16>) {
       const HPType scaled_input = __hmul(input[global_index], scaler);
       output[global_index] = __nv_cvt_bfloat16raw_to_fp8(
@@ -62,35 +62,16 @@ __global__ void saturated_cast_kernel_single_amax(
   }
 }
 
-template <typename HPType>
-__global__ void saturated_cast_kernel_single(
-    HPType *input, __nv_fp8_storage_t *output, int n_rows, int n_cols,
-    __nv_fp8_interpretation_t out_dtype, float *scaler) {
-  int row = blockIdx.y * blockDim.y + threadIdx.y;
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
-  // Assume row major
-  const int global_index = row * n_cols + col;
-  if (row < n_rows && col < n_cols) {
-    if constexpr (std::is_same_v<HPType, nv_bfloat16>) {
-      const HPType scaled_input = __hmul(input[global_index], (*scaler));
-      output[global_index] = __nv_cvt_bfloat16raw_to_fp8(
-          scaled_input, __nv_saturation_t::__NV_SATFINITE, out_dtype);
-    } else {
-      const HPType scaled_input = input[global_index] * (*scaler);
-      output[global_index] = __nv_cvt_float_to_fp8(
-          scaled_input, __nv_saturation_t::__NV_SATFINITE, out_dtype);
-    }
-  }
-}
-
 template <int coarse_factor, typename PackedHPType>
 __global__ void saturated_cast_kernel_double_coalesced_flat(
     PackedHPType const *__restrict input,
     __nv_fp8x2_storage_t *__restrict output, const int numels,
-    __nv_fp8_interpretation_t out_dtype, float const *scaler) {
+    __nv_fp8_interpretation_t out_dtype, float const *amax) {
   const int idx = (blockIdx.x * blockDim.x + threadIdx.x) * coarse_factor;
   const int stride = 1;
-  const PackedHPType scale_2 = {(*scaler), (*scaler)};
+  const float dtype_max = get_dtype_max(out_dtype);
+  const float scaler = dtype_max / std::max((*amax), 1e-12f);
+  const PackedHPType scale_2 = {scaler, scaler};
 
   PackedHPType scaled_inputs[coarse_factor];
 #pragma unroll
@@ -108,8 +89,8 @@ __global__ void saturated_cast_kernel_double_coalesced_flat(
         scaled_inputs[i] = __hmul2(scaled_inputs[i], scale_2);
       } else {
         // I can't find the right fmul2 fo this??
-        scaled_inputs[i] = {scaled_inputs[i].x * (*scaler),
-                            scaled_inputs[i].y * (*scaler)};
+        scaled_inputs[i] = {scaled_inputs[i].x * scaler,
+                            scaled_inputs[i].y * scaler};
       }
     }
   }
@@ -134,12 +115,14 @@ template <int coarse_factor, typename PackedHPType>
 __global__ void saturated_cast_kernel_double_coalesced(
     PackedHPType const *__restrict input,
     __nv_fp8x2_storage_t *__restrict output, int n_rows, int n_cols,
-    __nv_fp8_interpretation_t out_dtype, float const *scaler) {
+    __nv_fp8_interpretation_t out_dtype, float const *amax) {
   int row = blockIdx.y * blockDim.y + threadIdx.y;
   int col = (blockIdx.x * blockDim.x + threadIdx.x) * coarse_factor;
   const int row_stride = n_cols;
   const int col_stride = 1;
-  const PackedHPType scale_2 = {(*scaler), (*scaler)};
+  const float dtype_max = get_dtype_max(out_dtype);
+  const float scaler = dtype_max / std::max((*amax), 1e-12f);
+  const PackedHPType scale_2 = {scaler, scaler};
 
   PackedHPType scaled_inputs[coarse_factor];
 #pragma unroll
@@ -157,8 +140,8 @@ __global__ void saturated_cast_kernel_double_coalesced(
         scaled_inputs[i] = __hmul2(scaled_inputs[i], scale_2);
       } else {
         // I can't find the right fmul2 fo this??
-        scaled_inputs[i] = {scaled_inputs[i].x * (*scaler),
-                            scaled_inputs[i].y * (*scaler)};
+        scaled_inputs[i] = {scaled_inputs[i].x * scaler,
+                            scaled_inputs[i].y * scaler};
       }
     }
   }
@@ -194,7 +177,7 @@ enum KernelChoice { single, coalesced, coalesced_flat };
 
 void dispatch_best_kernel(const Tensor &input, const Tensor &output,
                           __nv_fp8_interpretation_t out_dtype,
-                          const Tensor &scale, bool transpose) {
+                          const Tensor &amax, bool transpose) {
   const int n_rows = input.size(0);
   const int n_cols = input.size(1);
   const int block_size_x = 32;
@@ -251,34 +234,7 @@ void dispatch_best_kernel(const Tensor &input, const Tensor &output,
 }
 } // namespace
 
-Tensor saturated_cast(const Tensor &input, const Tensor &scale,
-                      ScalarType dtype, bool transpose) {
-  TORCH_CHECK(dtype == at::kFloat8_e4m3fn || dtype == at::kFloat8_e5m2,
-              "Output tensor must be of type Float8_e4m3fn or Float8_e5m2")
-
-  TORCH_CHECK(input.scalar_type() == at::kBFloat16 ||
-                  input.scalar_type() == at::kFloat,
-              "Input tensor must be of type BFloat16 or Float, but got ",
-              input.dtype());
-  TORCH_CHECK(scale.scalar_type() == at::kFloat,
-              "Scale tensor must be of type Float, but got ", scale.dtype())
-  TORCH_CHECK(input.dim() == 2, "Input tensor must be 2D, but got ", input.dim());
-  TORCH_CHECK(scale.numel() == 1, "Scale tensor must be a scalar, but got ",
-              scale.numel());
-
-  // Input must either be transposed or contiguous
-  auto strides = input.strides();
-  bool is_contiguous = input.is_contiguous();
-  bool is_transposed = strides[0] == 1 && strides[1] == input.size(0);
-  bool check_allowed_strides =  (is_contiguous || is_transposed) && input.storage_offset() == 0 ;
-  auto contig_input = check_allowed_strides ? input : input.contiguous();
-
-  auto output = torch::empty_like(contig_input, contig_input.options().dtype(dtype));
-  dispatch_best_kernel(contig_input, output, dtype_map(dtype), scale, transpose);
-  return output;
-}
-
-Tensor saturated_cast_amax(const Tensor &input, const Tensor &amax,
+Tensor saturated_cast(const Tensor &input, const Tensor &amax,
                       ScalarType dtype, bool transpose) {
   TORCH_CHECK(dtype == at::kFloat8_e4m3fn || dtype == at::kFloat8_e5m2,
               "Output tensor must be of type Float8_e4m3fn or Float8_e5m2")
@@ -301,26 +257,8 @@ Tensor saturated_cast_amax(const Tensor &input, const Tensor &amax,
   auto contig_input = check_allowed_strides ? input : input.contiguous();
 
   auto output = torch::empty_like(contig_input, contig_input.options().dtype(dtype));
-  const int n_rows = input.size(0);
-  const int n_cols = input.size(1);
-  const int block_size_x = 32;
-  const int block_size_y = 32;
-  const auto numel = input.numel();
-  const dim3 block(block_size_x, block_size_y);
-  const dim3 grid(ceil_div(n_cols, block_size_x), ceil_div(n_rows, block_size_y));
-  if (input.scalar_type() == at::kBFloat16) {
-    auto * inpt_ptr = static_cast<nv_bfloat16 *>(contig_input.data_ptr());
-    auto * out_ptr = static_cast<__nv_fp8_storage_t *>(output.data_ptr());
-    auto * amax_ptr = static_cast<float *>(amax.data_ptr());
-    saturated_cast_kernel_single_amax<nv_bfloat16><<<grid,block>>>(inpt_ptr, out_ptr, n_rows, n_cols, dtype_map(dtype), amax_ptr);
-  } else if (input.scalar_type() == at::kFloat) {
-    auto * inpt_ptr = static_cast<float *>(contig_input.data_ptr());
-    auto * out_ptr = static_cast<__nv_fp8_storage_t *>(output.data_ptr());
-    auto * amax_ptr = static_cast<float *>(amax.data_ptr());
-    saturated_cast_kernel_single_amax<float><<<grid,block>>>(inpt_ptr, out_ptr, n_rows, n_cols, dtype_map(dtype), amax_ptr);
-  }
+  dispatch_best_kernel(contig_input, output, dtype_map(dtype), amax, transpose);
   return output;
 }
-
 
 } // namespace driss_torch

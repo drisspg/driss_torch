@@ -7,7 +7,7 @@ print(__name__)
 @impl_abstract("DrissTorch::saturated_cast")
 def saturated_cast_meta(
     x: torch.Tensor,
-    scale: torch.Tensor,
+    amax: torch.Tensor,
     out_dtype: torch.dtype,
     transpose: bool = False,
 ):
