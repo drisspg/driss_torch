@@ -104,7 +104,7 @@ def run_experiment(config: ExperimentConfig) -> ExperimentResult:
     eager_amax = torch.abs(high_precision_tensor).max().to(torch.float32)
 
     # Correctness check:
-    cuda_out = saturated_cast(cuda_hp_tensor, eager_amax, config.low_precision_dtype)
+    cuda_out, cuda_scale = saturated_cast(cuda_hp_tensor, eager_amax, config.low_precision_dtype)
     cuda_out_hp = cuda_out.to(config.high_precision_dtype)
 
     eager_out = eager_scaled_quant(

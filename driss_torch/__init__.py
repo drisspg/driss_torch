@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Tuple
 
 import torch
 
@@ -21,7 +22,7 @@ def saturated_cast(
     amax: torch.Tensor,
     out_dtype: torch.dtype,
     transpose: bool = False,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """This op takes in a tensor and returns the fp8 saturated casted version of it.
     Args;
         x: The input tensor.
@@ -31,7 +32,7 @@ def saturated_cast(
             using the formula `scale = amax / max(max_abs(x), 1e-12)`
         transpose: If true will transpose the input tensor during casting
     Returns:
-        The output tensor.
+        The output tensor. And the on device scale tensor.
     """
     assert not transpose, "Transpose is not supported yet"
     return ops.saturated_cast(x, amax, out_dtype, transpose)

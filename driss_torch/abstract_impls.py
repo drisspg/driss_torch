@@ -9,4 +9,6 @@ def saturated_cast_meta(
     out_dtype: torch.dtype,
     transpose: bool = False,
 ):
-    return torch.empty_like(x, dtype=out_dtype)
+    return torch.empty_like(x, dtype=out_dtype), torch.empty(
+        (), device=x.device, dtype=torch.float32
+    )
