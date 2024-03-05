@@ -1,8 +1,6 @@
 import torch
 from torch.library import impl_abstract
 
-print(__name__)
-
 
 @impl_abstract("DrissTorch::saturated_cast")
 def saturated_cast_meta(

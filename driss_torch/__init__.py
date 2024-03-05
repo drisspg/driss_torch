@@ -17,17 +17,6 @@ def list_ops():
     return ops.__dir__()
 
 
-def add_one(x: torch.Tensor) -> torch.Tensor:
-    """Add one to a tensor.
-    This is a dummy test op to demonstrate how to add custom ops to PyTorch.
-    Args:
-        x: The input tensor.
-    Returns:
-        The output tensor.
-    """
-    return ops.add_one(x)
-
-
 def saturated_cast(
     x: torch.Tensor,
     scale: torch.Tensor,
@@ -38,10 +27,12 @@ def saturated_cast(
     Args;
         x: The input tensor.
         out_dtype: The output data type, must be a float8 dtype.
-        scale: An optional on device tensor, this is expected to be a singleton tensor whose value will be multiplied
-            x before casting
+        scale: An on device tensor, this is expected to be a singleton tensor whose value is
+            the max(abs(x) before casting, we will use this to calculate the scale
+            using the formula `scale = amax / max(max_abs(x), 1e-12)`
         transpose: If true will transpose the input tensor during casting
     Returns:
         The output tensor.
     """
+    assert not transpose, "Transpose is not supported yet"
     return ops.saturated_cast(x, scale, out_dtype, transpose)

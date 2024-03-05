@@ -6,12 +6,14 @@ from typing import List
 import torch
 
 from driss_torch import saturated_cast
+
+from float8_experimental.float8_utils import amax_to_scale, tensor_to_amax
 from jsonargparse import CLI
 
 from tabulate import tabulate
 from tqdm import tqdm
 
-from transformer_nuggets.fp8.scaled_quant import eager_scaled_quant, scaled_quant
+from transformer_nuggets.fp8.scaled_quant import eager_scaled_quant
 from transformer_nuggets.utils import benchmark_torch_function_in_microseconds
 
 device = torch.device("cuda")
@@ -97,16 +99,18 @@ def run_experiment(config: ExperimentConfig) -> ExperimentResult:
         config.num_rows, config.num_cols, dtype=config.high_precision_dtype, device=device
     )
     cuda_hp_tensor = high_precision_tensor.clone()
-    cuda_scale = torch.ones(1, dtype=torch.bfloat16, device=device)
+    cuda_scale = amax_to_scale(
+        tensor_to_amax(cuda_hp_tensor), config.low_precision_dtype, config.high_precision_dtype
+    )
 
-    eager_abs_max = torch.abs(high_precision_tensor).max().to(torch.float32)
-
-    scale = torch.finfo(config.low_precision_dtype).max / eager_abs_max
-    scale = scale.to(torch.float32)
-    scale = torch.ones(1, dtype=torch.float32, device=device)
+    scale = amax_to_scale(
+        tensor_to_amax(high_precision_tensor),
+        config.low_precision_dtype,
+        config.high_precision_dtype,
+    )
 
     # Correctness check:
-    cuda_out = saturated_cast(cuda_hp_tensor, config.low_precision_dtype, cuda_scale)
+    cuda_out = saturated_cast(cuda_hp_tensor, cuda_scale, config.low_precision_dtype)
     cuda_out_hp = cuda_out.to(config.high_precision_dtype)
 
     eager_out = eager_scaled_quant(high_precision_tensor, scale, config.low_precision_dtype).to(
@@ -119,8 +123,8 @@ def run_experiment(config: ExperimentConfig) -> ExperimentResult:
     cuda_time = benchmark_torch_function_in_microseconds(
         saturated_cast,
         cuda_hp_tensor,
-        config.low_precision_dtype,
         cuda_scale,
+        config.low_precision_dtype,
     )
     pytorch_time = benchmark_torch_function_in_microseconds(
         eager_scaled_quant,
