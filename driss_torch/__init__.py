@@ -3,7 +3,6 @@ from pathlib import Path
 import torch
 
 lib_path = Path(__file__).parent / "lib" / "libdriss_torch.so"
-breakpoint()
 torch.ops.load_library(str(lib_path.resolve()))
 torch.ops.load_library(lib_path)
 torch.ops.import_module("driss_torch.abstract_impls")
