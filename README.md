@@ -19,12 +19,28 @@ pip install -v --no-build-isolation -e .
 This will invoke the `pyproject.toml` file and build the project with the `scikit-build` package.
 Including, calling cmake and building the shared library.
 
+
+### How to create a distributable wheel?
+- Lets make a test env:
+``` Shell
+conda create -n test_env python=3.10
+conda activate test_env
+
+# Install nightly torch
+pip3 install -U --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121
+```
+- Lets run the build command
+``` Shell
+pip install .
+```
+
+This will invoke cmake which in turn will build the shared library and installed into driss_torch/lib/libdriss_torch.so
+
 ### What does this do?
 So this will go and build the libdriss_torch.so shared library. In which there will be a number of ops that have been registered.
 In the python package `driss_torch` there will be small wrappers around the cpp ops with better type hints and documentation.
 
 Could use .ini but this more fun.
-
 
 #### Tip (Maybe unsafe?)
 The total install command from scratch can take a second. If you want a faster dev flow cd into build and once you change your sources of the lib just run `ninja` to rebuild the shared library. This will not work if you are adding and deleting files.

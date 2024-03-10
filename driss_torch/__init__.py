@@ -1,9 +1,8 @@
 from pathlib import Path
-from typing import Optional
 
 import torch
 
-lib_path = Path(__file__).parent / ".." / "build" / "libdriss_torch.so"
+lib_path = Path(__file__).parent / "lib" / "libdriss_torch.so"
 torch.ops.load_library(str(lib_path.resolve()))
 torch.ops.load_library(lib_path)
 torch.ops.import_module("driss_torch.abstract_impls")
