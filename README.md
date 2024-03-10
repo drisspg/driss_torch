@@ -34,6 +34,8 @@ pip3 install -U --pre torch --index-url https://download.pytorch.org/whl/nightly
 pip install .
 ```
 
+This will invoke cmake which in turn will build the shared library and installed into driss_torch/lib/libdriss_torch.so
+
 ### What does this do?
 So this will go and build the libdriss_torch.so shared library. In which there will be a number of ops that have been registered.
 In the python package `driss_torch` there will be small wrappers around the cpp ops with better type hints and documentation.

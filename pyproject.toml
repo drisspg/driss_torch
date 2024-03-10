@@ -34,9 +34,6 @@ dev = [
     "transformer_nuggets",
 ]
 
-[tool.setuptools.package-data]
-driss_torch = ["lib/*"]
-
 [tool.scikit-build]
 cmake.verbose = true
 logging.level = "INFO"
