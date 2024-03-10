@@ -38,7 +38,7 @@ add_library(driss_torch SHARED
     ${CPP_SOURCES}
 )
 
-# Set the library output directory
+# Set the library output directory, I think this makes ninja builds work
 set_target_properties(driss_torch PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/driss_torch/lib"
 )
