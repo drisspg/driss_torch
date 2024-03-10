@@ -19,7 +19,7 @@ dependencies = [
     "torch >= 2.2",
     "tqdm",
     "tabulate",
-    "transformer_nuggets"
+    "transformer_nuggets",
 ]
 
 [project.optional-dependencies]

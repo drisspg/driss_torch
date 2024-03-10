@@ -7,5 +7,6 @@ __pycache__/
 *.cubin
 *.fatbin
 build/**
+driss_torch/lib/**
 compile_commands.json
 benchmarks/data
