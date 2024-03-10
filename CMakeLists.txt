@@ -49,8 +49,6 @@ target_include_directories(driss_torch PUBLIC src/include)
 target_link_libraries(driss_torch PRIVATE ${TORCH_LIBRARIES} Python::Python)
 
 # Install the library to the wheel distribution
-# install(TARGET driss_torch LIBRARY DESTINATION driss_torch/lib)
-# # Install the library to the wheel distribution
-# install(TARGETS driss_torch
-#   LIBRARY DESTINATION driss_torch/lib
-# )
+install(TARGETS driss_torch
+  LIBRARY DESTINATION driss_torch/lib
+)
