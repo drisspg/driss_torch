@@ -31,9 +31,9 @@ find_package(Torch REQUIRED CONFIG)
 file(GLOB_RECURSE CU_SOURCES src/*.cu)
 file(GLOB_RECURSE CPP_SOURCES src/*.cpp)
 MESSAGE(STATUS "CU_SOURCES: ${CU_SOURCES}")
-MESSAGE(STATUS "PP_SOURCES: ${CPP_SOURCES}")
+MESSAGE(STATUS "CPP_SOURCES: ${CPP_SOURCES}")
 
-python_add_library(driss_torch SHARED
+add_library(driss_torch SHARED
     ${CU_SOURCES}
     ${CPP_SOURCES}
 )
@@ -48,6 +48,8 @@ target_include_directories(driss_torch PUBLIC src/include)
 # Link the library to the Torch library
 target_link_libraries(driss_torch PRIVATE ${TORCH_LIBRARIES} Python::Python)
 
+# Install the library to the wheel distribution
+# install(TARGET driss_torch LIBRARY DESTINATION driss_torch/lib)
 # # Install the library to the wheel distribution
 # install(TARGETS driss_torch
 #   LIBRARY DESTINATION driss_torch/lib
