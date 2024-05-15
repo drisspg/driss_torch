@@ -100,9 +100,9 @@ def run_experiment(config: ExperimentConfig) -> ExperimentResult:
     cuda_out = saturated_cast(cuda_hp_tensor, cuda_scale, config.low_precision_dtype)
     cuda_out_hp = cuda_out.to(config.high_precision_dtype)
 
-    eager_out = eager_scaled_quant(
-        high_precision_tensor, scale, config.low_precision_dtype
-    ).to(config.high_precision_dtype)
+    eager_out = eager_scaled_quant(high_precision_tensor, scale, config.low_precision_dtype).to(
+        config.high_precision_dtype
+    )
     eager_out_hp = eager_out.to(config.high_precision_dtype)
 
     torch.testing.assert_close(cuda_out_hp, eager_out_hp, rtol=1e-3, atol=1e-3)
