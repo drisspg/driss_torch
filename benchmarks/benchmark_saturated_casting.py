@@ -22,24 +22,6 @@ device = torch.device("cuda")
 torch._dynamo.config.cache_size_limit = 1000
 
 
-def eager_scaled_quant(
-    a: torch.Tensor,
-    scale: torch.Tensor,
-    fp8_dtype: torch.dtype,
-):
-    """Quantize tensor to fp8 using a delayed scaled and calculate abs_max
-
-    Args:
-        a: Input tensor to quantize
-        scale: Scale to apply to input tensor, calculated from previous abs_max
-        fp8_dtype: FP8 datatype to quantize to
-    """
-    out = a * scale
-    out = torch.where(out > torch.finfo(fp8_dtype).max, torch.finfo(fp8_dtype).max, out)
-    out = torch.where(out < -1 * torch.finfo(fp8_dtype).max, -1 * torch.finfo(fp8_dtype).max, out)
-    return out.to(fp8_dtype)
-
-
 @dataclass(frozen=True)
 class ExperimentConfig:
     num_rows: int
@@ -62,7 +44,7 @@ class Experiment:
 
 
 def get_configs() -> List[ExperimentConfig]:
-    sizes = [2**9, 2**10, 2**11, 2**12]
+    # sizes = [2**9, 2**10, 2**11, 2**12]
     high_precision_dtypes = [torch.bfloat16]
     low_precision_dtypes = [torch.float8_e4m3fn, torch.float8_e5m2]
     configs = []
@@ -96,11 +78,16 @@ def get_configs() -> List[ExperimentConfig]:
 
 def run_experiment(config: ExperimentConfig) -> ExperimentResult:
     high_precision_tensor = torch.randn(
-        config.num_rows, config.num_cols, dtype=config.high_precision_dtype, device=device
+        config.num_rows,
+        config.num_cols,
+        dtype=config.high_precision_dtype,
+        device=device,
     )
     cuda_hp_tensor = high_precision_tensor.clone()
     cuda_scale = amax_to_scale(
-        tensor_to_amax(cuda_hp_tensor), config.low_precision_dtype, config.high_precision_dtype
+        tensor_to_amax(cuda_hp_tensor),
+        config.low_precision_dtype,
+        config.high_precision_dtype,
     )
 
     scale = amax_to_scale(
@@ -113,9 +100,9 @@ def run_experiment(config: ExperimentConfig) -> ExperimentResult:
     cuda_out = saturated_cast(cuda_hp_tensor, cuda_scale, config.low_precision_dtype)
     cuda_out_hp = cuda_out.to(config.high_precision_dtype)
 
-    eager_out = eager_scaled_quant(high_precision_tensor, scale, config.low_precision_dtype).to(
-        config.high_precision_dtype
-    )
+    eager_out = eager_scaled_quant(
+        high_precision_tensor, scale, config.low_precision_dtype
+    ).to(config.high_precision_dtype)
     eager_out_hp = eager_out.to(config.high_precision_dtype)
 
     torch.testing.assert_close(cuda_out_hp, eager_out_hp, rtol=1e-3, atol=1e-3)

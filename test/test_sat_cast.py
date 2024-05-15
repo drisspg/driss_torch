@@ -18,7 +18,9 @@ def eager_scaled_quant(
     """
     out = a * scale
     out = torch.where(out > torch.finfo(fp8_dtype).max, torch.finfo(fp8_dtype).max, out)
-    out = torch.where(out < -1 * torch.finfo(fp8_dtype).max, -1 * torch.finfo(fp8_dtype).max, out)
+    out = torch.where(
+        out < -1 * torch.finfo(fp8_dtype).max, -1 * torch.finfo(fp8_dtype).max, out
+    )
     return out.to(fp8_dtype)
 
 
@@ -26,7 +28,9 @@ def eager_scaled_quant(
 @pytest.mark.parametrize("num_cols", [7, 17, 127, 512, 3212, 4097])
 @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
 @pytest.mark.parametrize("in_dtype", [torch.bfloat16, torch.float32])
-def test_cast(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: torch.dtype):
+def test_cast(
+    num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: torch.dtype
+):
     a = torch.rand(num_rows, num_cols, dtype=in_dtype, device="cuda")
     scale = tensor_to_scale(a, fp8_dtype)
 
@@ -42,7 +46,9 @@ def test_cast(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: to
 @pytest.mark.parametrize("num_cols", [7, 17, 127, 512, 3212, 4097])
 @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
 @pytest.mark.parametrize("in_dtype", [torch.bfloat16, torch.float32])
-def test_cast_compile(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: torch.dtype):
+def test_cast_compile(
+    num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_dtype: torch.dtype
+):
     torch._dynamo.reset()
     a = torch.rand(num_rows, num_cols, dtype=in_dtype, device="cuda")
     scale = tensor_to_scale(a, fp8_dtype)
@@ -58,7 +64,11 @@ def test_cast_compile(num_rows: int, num_cols: int, in_dtype: torch.dtype, fp8_d
 
 @pytest.mark.xfail(reason="This test is failing, we need to investigate", strict=True)
 def test_cast_edge_bug():
-    a = torch.Tensor([0.3223, 0.3223, 0.3223]).to(device="cuda", dtype=torch.bfloat16).view(2, 1)
+    a = (
+        torch.Tensor([0.3223, 0.3223, 0.3223])
+        .to(device="cuda", dtype=torch.bfloat16)
+        .view(2, 1)
+    )
     scale = torch.Tensor([57344.0]).to("cuda")
     cast_pytorch = eager_scaled_quant(a, scale, torch.float8_e5m2)
     cast_custom = saturated_cast(a, scale, torch.float8_e5m2)
