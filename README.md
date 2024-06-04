@@ -53,7 +53,7 @@ import driss_torch
 
 a = torch.randn(10, 10, device='cuda')
 b = driss_torch.add_one(b)
-print (b)
+print(b)
 ```
 
 ### Install pre-commit hooks
