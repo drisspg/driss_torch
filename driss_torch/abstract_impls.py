@@ -1,8 +1,8 @@
 import torch
-from torch.library import impl_abstract
+from torch.library import register_fake
 
 
-@impl_abstract("DrissTorch::saturated_cast")
+@register_fake("DrissTorch::saturated_cast")
 def saturated_cast_meta(
     x: torch.Tensor,
     scale: torch.Tensor,
