@@ -10,3 +10,10 @@ def saturated_cast_meta(
     transpose: bool = False,
 ):
     return torch.empty_like(x, dtype=out_dtype)
+
+
+@register_fake("DrissTorch::amax")
+def amax_meta(
+    x: torch.Tensor,
+):
+    return torch.empty(1, dtype=torch.float32, device=x.device)

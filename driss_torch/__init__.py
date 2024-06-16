@@ -35,3 +35,8 @@ def saturated_cast(
     """
     assert not transpose, "Transpose is not supported yet"
     return ops.saturated_cast(x, scale, out_dtype, transpose)
+
+
+def amax(x: torch.Tensor) -> float:
+    """This op takes in a tensor and returns the max absolute value of it."""
+    return ops.amax(x)
