@@ -47,7 +47,7 @@ __device__ float reduce_amax(thread_group g, float *temp, float val) {
   return val; // note: only thread 0 will return full sum
 }
 
-template <int coarse_factor, typename PackedType>
+template <typename PackedType>
 __device__ float thread_amax(PackedType *input, size_t n) {
   float amax = -std::numeric_limits<float>::infinity();
 
@@ -67,10 +67,10 @@ __device__ float thread_amax(PackedType *input, size_t n) {
   return amax;
 }
 
-template <int coarse_factor, typename PackedType, typename UnpackedType>
+template <typename PackedType, typename UnpackedType>
 __global__ void amax_kernel(float *amax, PackedType *input, int64_t numel) {
   auto g = this_thread_block();
-  float my_amax = thread_amax<coarse_factor, PackedType>(input, numel);
+  float my_amax = thread_amax<PackedType>(input, numel);
   extern __shared__ float temp[];
   float block_max = reduce_amax(g, temp, my_amax);
 
@@ -88,12 +88,12 @@ void launch_kernel(const Tensor &input, Tensor &output) {
   int sharedBytes = blockSize * sizeof(float);
 
   if (input.scalar_type() == at::kFloat) {
-    amax_kernel<coarse_factor, float2, float>
+    amax_kernel<float2, float>
         <<<nBlocks, blockSize, sharedBytes>>>(
             static_cast<float *>(output.data_ptr()),
             static_cast<float2 *>(input.data_ptr()), numel);
   } else {
-    amax_kernel<coarse_factor, nv_bfloat162, nv_bfloat16>
+    amax_kernel<nv_bfloat162, nv_bfloat16>
         <<<nBlocks, blockSize, sharedBytes>>>(
             static_cast<float *>(output.data_ptr()),
             static_cast<nv_bfloat162 *>(input.data_ptr()), numel);
