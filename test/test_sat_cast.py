@@ -1,7 +1,7 @@
 import pytest
 import torch
 from driss_torch import saturated_cast
-from float8_experimental.float8_utils import tensor_to_scale
+from torchao.float8.float8_utils import tensor_to_scale
 
 
 def eager_scaled_quant(
