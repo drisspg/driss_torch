@@ -5,6 +5,7 @@
 #include "amax.h"
 #include "dynamic_scaled_quant.h"
 #include "saturated_cast.h"
+#include "sweep_mm.h"
 
 TORCH_LIBRARY(DrissTorch, m) {
   m.impl_abstract_pystub("driss_torch.abstract_impls");
@@ -20,4 +21,7 @@ TORCH_LIBRARY(DrissTorch, m) {
   m.def("dynamic_scaled_quant(Tensor input, ScalarType dtype) -> Tensor");
   m.impl("dynamic_scaled_quant", c10::DispatchKey::CUDA,
          TORCH_FN(driss_torch::dynamic_scaled_quant));
+  // sweep_mm
+  m.def("sweep_mm(Tensor x, Tensor w, Tensor x_scale, Tensor w_scale, Tensor? bias , ScalarType out_dtype, bool use_fast_accum, int cluster_shape_x, int cluster_shape_y, int cluster_shape_z, bool transposed, int swizzle) -> Tensor");
+  m.impl("sweep_mm", c10::DispatchKey::CUDA, TORCH_FN(driss_torch::sweep_mm));
 }
