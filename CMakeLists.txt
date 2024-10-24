@@ -46,7 +46,7 @@ set_target_properties(driss_torch PROPERTIES
 target_include_directories(driss_torch PUBLIC src/include)
 
 # Link the library to the Torch library
-target_link_libraries(driss_torch PRIVATE ${TORCH_LIBRARIES} Python::Python)
+target_link_libraries(driss_torch PRIVATE ${TORCH_LIBRARIES})
 
 # Install the library to the wheel distribution
 install(TARGETS driss_torch
