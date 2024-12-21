@@ -7,6 +7,7 @@ torch.ops.load_library(str(lib_path.resolve()))
 torch.ops.load_library(lib_path)
 torch.ops.import_module("driss_torch.abstract_impls")
 
+Tensor = torch.Tensor
 
 ops = torch.ops.DrissTorch
 
@@ -17,8 +18,8 @@ def list_ops():
 
 
 def saturated_cast(
-    x: torch.Tensor,
-    scale: torch.Tensor,
+    x: Tensor,
+    scale: Tensor,
     out_dtype: torch.dtype,
     transpose: bool = False,
 ) -> torch.Tensor:
@@ -37,6 +38,10 @@ def saturated_cast(
     return ops.saturated_cast(x, scale, out_dtype, transpose)
 
 
-def amax(x: torch.Tensor) -> float:
+def amax(x: Tensor) -> float:
     """This op takes in a tensor and returns the max absolute value of it."""
     return ops.amax(x)
+
+
+def dynamic_scaled_quant(inpt: Tensor, dtype: torch.dtype) -> Tensor:
+    return ops.dynamic_scaled_quant(inpt, dtype)

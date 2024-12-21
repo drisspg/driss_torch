@@ -12,6 +12,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Enable better clangd support
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Add in line info
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lineinfo")
+# Optional: Enable device-side assertions
+
 find_package(Python REQUIRED COMPONENTS Interpreter Development)
 execute_process(
         COMMAND "${Python3_EXECUTABLE}" "-c" "import torch;print(torch.utils.cmake_prefix_path)"
