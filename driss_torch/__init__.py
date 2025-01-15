@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 
 import torch
 
@@ -10,6 +11,7 @@ torch.ops.import_module("driss_torch.abstract_impls")
 Tensor = torch.Tensor
 
 ops = torch.ops.DrissTorch
+Tensor = torch.Tensor
 
 
 def list_ops():
@@ -45,3 +47,33 @@ def amax(x: Tensor) -> float:
 
 def dynamic_scaled_quant(inpt: Tensor, dtype: torch.dtype) -> Tensor:
     return ops.dynamic_scaled_quant(inpt, dtype)
+
+
+def sweep_mm(
+    x: torch.Tensor,
+    w: torch.Tensor,
+    x_scale: torch.Tensor,
+    w_scale: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    out_dtype: torch.dtype,
+    use_fast_accum: bool,
+    cluster_shape_x: int,
+    cluster_shape_y: int,
+    cluster_shape_z: int,
+    transposed: bool,
+    swizzle: int,
+) -> torch.Tensor:
+    return ops.sweep_mm(
+        x,
+        w,
+        x_scale,
+        w_scale,
+        bias,
+        out_dtype,
+        use_fast_accum,
+        cluster_shape_x,
+        cluster_shape_y,
+        cluster_shape_z,
+        transposed,
+        swizzle,
+    )
