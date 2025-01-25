@@ -4,15 +4,10 @@ project(${SKBUILD_PROJECT_NAME}
         LANGUAGES CXX CUDA)
 
 # Set the C++ standard for all targets
-set(CMAKE_CXX_STANDARD 20) # This might be unsafe since pytorch use std17
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Enable better clangd support
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# Add in line info
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lineinfo")
-# Optional: Enable device-side assertions
 
 find_package(Python REQUIRED COMPONENTS Interpreter Development)
 execute_process(
@@ -24,8 +19,8 @@ execute_process(
 )
 
 # Set CUDA architecture to SM90a
-set(CMAKE_CUDA_ARCHITECTURES 90a)
-set(TORCH_CUDA_ARCH_LIST "9.0a")
+set(CMAKE_CUDA_ARCHITECTURES 100a)
+set(TORCH_CUDA_ARCH_LIST "10.0a")
 
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH};${PT_CMAKE_PREFIX})
 find_package(Torch REQUIRED CONFIG)
