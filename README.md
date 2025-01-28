@@ -9,8 +9,7 @@ all the things that I wanna try.
 ## Build
 ### New scikit-build core way
 ``` Shell
-pip install scikit_build_core
-pip install pyproject-metadata
+pip install scikit_build_core pyproject-metadata
 
 # Install in editable mode
 pip install -v --no-build-isolation -e .
