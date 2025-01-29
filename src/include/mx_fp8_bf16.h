@@ -4,6 +4,6 @@
 
 namespace driss_torch {
 
-at::Tensor mx_fp8_bf16(at::Tensor XQ, at::Tensor WQ, at::Tensor x_scale,
-                       at::Tensor w_scale);
+at::Tensor mx_fp8_bf16(at::Tensor a, at::Tensor b, at::Tensor a_scale,
+                       at::Tensor b_scale);
 } // namespace driss_torch

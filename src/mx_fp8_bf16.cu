@@ -6,24 +6,8 @@
 #include "cutlass/epilogue/thread/linear_combination.h"
 #include "cutlass/gemm/collective/collective_builder.hpp"
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
-#include "cutlass/gemm/dispatch_policy.hpp"
-#include "cutlass/gemm/kernel/gemm_universal.hpp"
-#include "cutlass/gemm/kernel/tile_scheduler_params.h"
-#include "cutlass/tensor_ref.h"
-
-#include "cutlass/util/command_line.h"
-#include "cutlass/util/distribution.h"
-#include "cutlass/util/host_tensor.h"
 #include "cutlass/util/packed_stride.hpp"
-#include "cutlass/util/reference/device/gemm.h"
-#include "cutlass/util/reference/device/tensor_compare.h"
-#include "cutlass/util/reference/host/gett.hpp"
-#include "cutlass/util/reference/host/tensor_compare.h"
-#include "cutlass/util/reference/host/tensor_fill.h"
-#include "cutlass/util/reference/host/tensor_norm.h"
-#include "cutlass/util/tensor_view_io.h"
 
-#include "torch/torch.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/core/ScalarType.h>
 #include <c10/cuda/CUDAException.h>
@@ -36,21 +20,21 @@ namespace driss_torch {
 using namespace at;
 namespace {
 using namespace cute;
-void run_gemm(at::Tensor& XQ, at::Tensor& WQ, at::Tensor& x_scale,
-             at::Tensor& w_scale, at::Tensor& out) {
- int M = XQ.size(0);
- int N = WQ.size(1);
- int K = XQ.size(1);
-
+void run_gemm(at::Tensor& a, at::Tensor& b, at::Tensor& a_scale,
+             at::Tensor& b_scale, at::Tensor& out) {
+ int M = a.size(0);
+ int K = a.size(1);
+ int N = b.size(1);
+std::cout << "M: " << M << ", N: " << N << ", K: " << K << std::endl;
   // A matrix configuration
   using         ElementA    = cutlass::mx_float8_t<cutlass::float_e4m3_t>;    // Element type for A matrix operand
   using         LayoutATag  = cutlass::layout::RowMajor;                      // Layout type for A matrix operand
-  constexpr int AlignmentA  = 128 / cutlass::sizeof_bits<ElementA>::value;    // Memory access granularity/alignment of A matrix in units of elements (up to 16 bytes)
+  constexpr int AlignmentA  = 16;    // Memory access granularity/alignment of A matrix in units of elements (up to 16 bytes)
 
   // B matrix configuration
   using         ElementB    = cutlass::mx_float8_t<cutlass::float_e4m3_t>;    // Element type for A matrix operand
   using         LayoutBTag  = cutlass::layout::ColumnMajor;                   // Layout type for B matrix operand
-  constexpr int AlignmentB  = 128 / cutlass::sizeof_bits<ElementB>::value;    // Memory access granularity/alignment of B matrix in units of elements (up to 16 bytes)
+  constexpr int AlignmentB  = 128;    // Memory access granularity/alignment of B matrix in units of elements (up to 16 bytes)
 
   // C/D matrix configuration
   using         ElementD    = cutlass::bfloat16_t;                            // Element type for D matrix operand
@@ -66,7 +50,7 @@ void run_gemm(at::Tensor& XQ, at::Tensor& WQ, at::Tensor& x_scale,
 
   // Kernel Perf config
   using MmaTileShape        = Shape<_128,_128,_128>;                          // MMA's tile size
-  using ClusterShape        = Shape<_2,_2,_1>;                                // Shape of the threadblocks in a cluster
+  using ClusterShape        = Shape<_1,_1,_1>;                                // Shape of the threadblocks in a cluster
   using PerSmTileShape_MNK  = Shape<_128,_128,_128>;                          // Threadblock-level tile size
 
   using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
@@ -99,15 +83,26 @@ void run_gemm(at::Tensor& XQ, at::Tensor& WQ, at::Tensor& x_scale,
 
   // Reference device GEMM implementation type
   using StrideA   = typename Gemm::GemmKernel::StrideA;
-  using LayoutA   = decltype(cute::make_layout(make_shape(0,0,0), StrideA{}));
-  using LayoutSFA = typename Gemm::GemmKernel::CollectiveMainloop::LayoutSFA;      // Scale Factor tensors have an interleaved layout. Bring Layout instead of stride.
   using StrideB   = typename Gemm::GemmKernel::StrideB;
-  using LayoutB   = decltype(cute::make_layout(make_shape(0,0,0), StrideB{}));
-  using LayoutSFB = typename Gemm::GemmKernel::CollectiveMainloop::LayoutSFB;      // Scale Factor tensors have an interleaved layout. Bring Layout instead of stride.
   using StrideC   = typename Gemm::GemmKernel::StrideC;
-  using LayoutC   = decltype(cute::make_layout(make_shape(0,0,0), StrideC{}));
   using StrideD   = typename Gemm::GemmKernel::StrideD;
-  using LayoutD   = decltype(cute::make_layout(make_shape(0,0,0), StrideD{}));
+  using LayoutSFA = typename Gemm::GemmKernel::CollectiveMainloop::LayoutSFA;
+  using LayoutSFB = typename Gemm::GemmKernel::CollectiveMainloop::LayoutSFB;
+  using Sm100BlkScaledConfig = typename Gemm::GemmKernel::CollectiveMainloop::Sm100BlkScaledConfig;
+
+  // Initialize strides using packed stride configuration
+  auto stride_A = cutlass::make_cute_packed_stride(StrideA{}, make_shape(M, K, 1));
+  auto stride_B = cutlass::make_cute_packed_stride(StrideB{}, make_shape(N, K, 1));
+  auto stride_D = cutlass::make_cute_packed_stride(StrideD{}, make_shape(M, N, 1));
+
+  // Create layouts with proper shapes and strides
+  auto layout_A = make_layout(make_shape(M, K, 1), stride_A);
+  auto layout_B = make_layout(make_shape(K, N, 1), stride_B);
+  auto layout_D = make_layout(make_shape(M, N, 1), stride_D);
+
+  // Initialize scale factor layouts using block scaled configuration
+  auto layout_SFA = Sm100BlkScaledConfig::tile_atom_to_shape_SFA(make_shape(M, N, K, 1));
+  auto layout_SFB = Sm100BlkScaledConfig::tile_atom_to_shape_SFB(make_shape(M, N, K, 1));
 
   using DtypeA = ElementA::DataType;
   using DtypeB = ElementB::DataType;
@@ -115,25 +110,12 @@ void run_gemm(at::Tensor& XQ, at::Tensor& WQ, at::Tensor& x_scale,
   using DtypeScaleB = ElementB::ScaleFactorType;
   using DtypeOut = ElementD;
 
-  /// Initialization
-  StrideA stride_A;
-  // LayoutA layout_A;
-  LayoutSFA layout_SFA;
-  StrideB stride_B;
-  // LayoutB layout_B;
-  LayoutSFB layout_SFB;
-  StrideC stride_C;
-  // LayoutC layout_C;
-  StrideD stride_D;
-  // LayoutD layout_D;
-  // uint64_t seed;
-
   Gemm gemm;
 
-  auto A_ptr = reinterpret_cast<DtypeA*>(XQ.data_ptr());
-  auto B_ptr = reinterpret_cast<DtypeB*>(WQ.data_ptr());
-  auto SFA_ptr = reinterpret_cast<DtypeScaleA*>(x_scale.data_ptr());
-  auto SFB_ptr = reinterpret_cast<DtypeScaleB*>(w_scale.data_ptr());
+  auto A_ptr = reinterpret_cast<DtypeA*>(a.data_ptr());
+  auto B_ptr = reinterpret_cast<DtypeB*>(b.data_ptr());
+  auto SFA_ptr = reinterpret_cast<DtypeScaleA*>(a_scale.data_ptr());
+  auto SFB_ptr = reinterpret_cast<DtypeScaleB*>(b_scale.data_ptr());
   auto out_ptr = reinterpret_cast<DtypeOut*>(out.data_ptr());
 
   typename Gemm::Arguments arguments{
@@ -146,8 +128,8 @@ void run_gemm(at::Tensor& XQ, at::Tensor& WQ, at::Tensor& x_scale,
       SFB_ptr, layout_SFB
     },
     { // Epilogue arguments
-      {1,0},
-      nullptr, stride_C,
+      {1.0, 0.0},
+      nullptr, StrideC{},  // No bias for now
       out_ptr, stride_D
     }
   };
@@ -157,10 +139,10 @@ void run_gemm(at::Tensor& XQ, at::Tensor& WQ, at::Tensor& x_scale,
   // Check the problem size is supported or not
   cutlass::Status status = gemm.can_implement(arguments);
   TORCH_CHECK(status == cutlass::Status::kSuccess, "Cutlass cannot implement");
-
   // Allocate workspace memory
   size_t workspace_size = Gemm::get_workspace_size(arguments);
-  auto workspace = XQ.new_empty(
+  std::cout<<"Workspace size: "<< workspace_size<<std::endl;
+  auto workspace = a.new_empty(
       {static_cast<int64_t>(workspace_size)},
       at::TensorOptions().dtype(at::kByte));
 
@@ -177,17 +159,17 @@ void run_gemm(at::Tensor& XQ, at::Tensor& WQ, at::Tensor& x_scale,
 }
 }
 
-at::Tensor mx_fp8_bf16(at::Tensor XQ, at::Tensor WQ, at::Tensor x_scale,
-                    at::Tensor w_scale) {
- TORCH_CHECK(XQ.is_cuda(), "XQ must be CUDA tensor");
- TORCH_CHECK(WQ.is_cuda(), "WQ must be CUDA tensor");
- TORCH_CHECK(x_scale.is_cuda(), "x_scale must be CUDA tensor");
- TORCH_CHECK(w_scale.is_cuda(), "w_scale must be CUDA tensor");
+at::Tensor mx_fp8_bf16(at::Tensor a, at::Tensor b, at::Tensor a_scale,
+                    at::Tensor b_scale) {
+ TORCH_CHECK(a.is_cuda(), "a must be CUDA tensor");
+ TORCH_CHECK(b.is_cuda(), "b must be CUDA tensor");
+ TORCH_CHECK(a_scale.is_cuda(), "a_scale must be CUDA tensor");
+ TORCH_CHECK(b_scale.is_cuda(), "b_scale must be CUDA tensor");
 
- auto out = at::empty({XQ.size(0), WQ.size(1)},
-                     XQ.options().dtype(at::kBFloat16));
+ auto out = at::empty({a.size(0), b.size(1)},
+                     a.options().dtype(at::kBFloat16));
 
- run_gemm(XQ, WQ, x_scale, w_scale, out);
+ run_gemm(a, b, a_scale, b_scale, out);
  return out;
 }
 

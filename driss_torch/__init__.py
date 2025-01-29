@@ -79,7 +79,7 @@ def sweep_mm(
 
 
 
-def mx_fp8_bf16(x: torch.Tensor, w: torch.Tensor, x_scale: torch.Tensor, w_scale: torch.Tensor) -> Tensor:
+def mx_fp8_bf16(a: torch.Tensor, b: torch.Tensor, a_scale: torch.Tensor, b_scale: torch.Tensor) -> Tensor:
    """Matrix multiplication between two FP8 tensors with E8M0 scaling.
    
    Args:
@@ -91,4 +91,4 @@ def mx_fp8_bf16(x: torch.Tensor, w: torch.Tensor, x_scale: torch.Tensor, w_scale
    Returns:
        torch.Tensor: Result tensor in BF16 format
    """
-   return ops.mx_fp8_bf16(x, w, x_scale, w_scale)
+   return ops.mx_fp8_bf16(a, b, a_scale, b_scale)
