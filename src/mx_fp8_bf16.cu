@@ -13,31 +13,44 @@
 #include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/util/Exception.h>
-#include <torch/torch.h>
+
+#include <ATen/ATen.h>
+#include <ATen/core/Tensor.h>
 
 
 namespace driss_torch {
-using namespace at;
 namespace {
+
 using namespace cute;
+
+template<typename Element>
+consteval int GetAlignment() {
+    if constexpr (std::is_same_v<Element, cutlass::nv_float4_t<cutlass::float_e2m1_t>>)
+        return 32;
+    return 16;
+}
+
+template <typename ElementA,
+          typename ElementB,
+          typename ElementD,
+          typename MmaTileShape,
+          typename ClusterShape,
+          typename PerSmTileShape_MNK>
 void run_gemm(at::Tensor& a, at::Tensor& b, at::Tensor& a_scale,
              at::Tensor& b_scale, at::Tensor& out) {
  int M = a.size(0);
  int K = a.size(1);
  int N = b.size(1);
-std::cout << "M: " << M << ", N: " << N << ", K: " << K << std::endl;
+
   // A matrix configuration
-  using         ElementA    = cutlass::mx_float8_t<cutlass::float_e4m3_t>;    // Element type for A matrix operand
   using         LayoutATag  = cutlass::layout::RowMajor;                      // Layout type for A matrix operand
-  constexpr int AlignmentA  = 16;    // Memory access granularity/alignment of A matrix in units of elements (up to 16 bytes)
+  constexpr int AlignmentA  = GetAlignment<ElementA>();    // Memory access granularity/alignment of A matrix in units of elements (up to 16 bytes)
 
   // B matrix configuration
-  using         ElementB    = cutlass::mx_float8_t<cutlass::float_e4m3_t>;    // Element type for A matrix operand
   using         LayoutBTag  = cutlass::layout::ColumnMajor;                   // Layout type for B matrix operand
   constexpr int AlignmentB  = 128;    // Memory access granularity/alignment of B matrix in units of elements (up to 16 bytes)
 
   // C/D matrix configuration
-  using         ElementD    = cutlass::bfloat16_t;                            // Element type for D matrix operand
   using         ElementC    = cutlass::bfloat16_t;                            // Element type for C matrix operand
   using         LayoutCTag  = cutlass::layout::RowMajor;                      // Layout type for C matrix operand
   using         LayoutDTag  = cutlass::layout::RowMajor;                      // Layout type for D matrix operand
@@ -48,10 +61,6 @@ std::cout << "M: " << M << ", N: " << N << ", K: " << K << std::endl;
   using ArchTag             = cutlass::arch::Sm100;                           // Tag indicating the minimum SM that supports the intended feature
   using OperatorClass       = cutlass::arch::OpClassBlockScaledTensorOp;      // Operator class tag
 
-  // Kernel Perf config
-  using MmaTileShape        = Shape<_128,_128,_128>;                          // MMA's tile size
-  using ClusterShape        = Shape<_1,_1,_1>;                                // Shape of the threadblocks in a cluster
-  using PerSmTileShape_MNK  = Shape<_128,_128,_128>;                          // Threadblock-level tile size
 
   using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
       ArchTag, OperatorClass,
@@ -95,11 +104,6 @@ std::cout << "M: " << M << ", N: " << N << ", K: " << K << std::endl;
   auto stride_B = cutlass::make_cute_packed_stride(StrideB{}, make_shape(N, K, 1));
   auto stride_D = cutlass::make_cute_packed_stride(StrideD{}, make_shape(M, N, 1));
 
-  // Create layouts with proper shapes and strides
-  auto layout_A = make_layout(make_shape(M, K, 1), stride_A);
-  auto layout_B = make_layout(make_shape(K, N, 1), stride_B);
-  auto layout_D = make_layout(make_shape(M, N, 1), stride_D);
-
   // Initialize scale factor layouts using block scaled configuration
   auto layout_SFA = Sm100BlkScaledConfig::tile_atom_to_shape_SFA(make_shape(M, N, K, 1));
   auto layout_SFB = Sm100BlkScaledConfig::tile_atom_to_shape_SFB(make_shape(M, N, K, 1));
@@ -141,7 +145,6 @@ std::cout << "M: " << M << ", N: " << N << ", K: " << K << std::endl;
   TORCH_CHECK(status == cutlass::Status::kSuccess, "Cutlass cannot implement");
   // Allocate workspace memory
   size_t workspace_size = Gemm::get_workspace_size(arguments);
-  std::cout<<"Workspace size: "<< workspace_size<<std::endl;
   auto workspace = a.new_empty(
       {static_cast<int64_t>(workspace_size)},
       at::TensorOptions().dtype(at::kByte));
@@ -160,17 +163,45 @@ std::cout << "M: " << M << ", N: " << N << ", K: " << K << std::endl;
 }
 
 at::Tensor mx_fp8_bf16(at::Tensor a, at::Tensor b, at::Tensor a_scale,
-                    at::Tensor b_scale) {
- TORCH_CHECK(a.is_cuda(), "a must be CUDA tensor");
- TORCH_CHECK(b.is_cuda(), "b must be CUDA tensor");
- TORCH_CHECK(a_scale.is_cuda(), "a_scale must be CUDA tensor");
- TORCH_CHECK(b_scale.is_cuda(), "b_scale must be CUDA tensor");
+                       at::Tensor b_scale) {
+  TORCH_CHECK(a.is_cuda(), "a must be CUDA tensor");
+  TORCH_CHECK(b.is_cuda(), "b must be CUDA tensor");
+  TORCH_CHECK(a_scale.is_cuda(), "a_scale must be CUDA tensor");
+  TORCH_CHECK(b_scale.is_cuda(), "b_scale must be CUDA tensor");
 
- auto out = at::empty({a.size(0), b.size(1)},
-                     a.options().dtype(at::kBFloat16));
+  auto out =
+      at::empty({a.size(0), b.size(1)}, a.options().dtype(at::kBFloat16));
+  using ElementA = cutlass::mx_float8_t<cutlass::float_e4m3_t>;
+  using ElementB = cutlass::mx_float8_t<cutlass::float_e4m3_t>;
+  using ElementD = cutlass::bfloat16_t;
 
- run_gemm(a, b, a_scale, b_scale, out);
- return out;
+  using MmaTileShape        = Shape<_256,_256,_256>;
+  using ClusterShape        = Shape<_4,_4,_1>;
+  using PerSmTileShape_MNK  = Shape<_128,_256,_256>;
+
+  run_gemm<ElementA, ElementB, ElementD, MmaTileShape, ClusterShape, PerSmTileShape_MNK>(a, b, a_scale, b_scale, out);
+  return out;
+}
+
+at::Tensor mx_fp4_bf16(at::Tensor a, at::Tensor b, at::Tensor a_scale,
+                       at::Tensor b_scale) {
+  TORCH_CHECK(a.is_cuda(), "a must be CUDA tensor");
+  TORCH_CHECK(b.is_cuda(), "b must be CUDA tensor");
+  TORCH_CHECK(a_scale.is_cuda(), "a_scale must be CUDA tensor");
+  TORCH_CHECK(b_scale.is_cuda(), "b_scale must be CUDA tensor");
+
+  auto out =
+      at::empty({a.size(0), b.size(1)}, a.options().dtype(at::kBFloat16));
+  using ElementA = cutlass::nv_float4_t<cutlass::float_e2m1_t>;
+  using ElementB = cutlass::nv_float4_t<cutlass::float_e2m1_t>;
+  using ElementD = cutlass::bfloat16_t;
+
+  using MmaTileShape        = Shape<_256,_256,_256>;
+  using ClusterShape        = Shape<_4,_4,_1>;
+  using PerSmTileShape_MNK  = Shape<_128,_256,_256>;
+
+  run_gemm<ElementA, ElementB, ElementD, MmaTileShape, ClusterShape, PerSmTileShape_MNK>(a, b, a_scale, b_scale, out);
+  return out;
 }
 
 } // namespace driss_torch
