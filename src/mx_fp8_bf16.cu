@@ -175,9 +175,9 @@ at::Tensor mx_fp8_bf16(at::Tensor a, at::Tensor b, at::Tensor a_scale,
   using ElementB = cutlass::mx_float8_t<cutlass::float_e4m3_t>;
   using ElementD = cutlass::bfloat16_t;
 
-  using MmaTileShape        = Shape<_256,_256,_256>;
-  using ClusterShape        = Shape<_4,_4,_1>;
-  using PerSmTileShape_MNK  = Shape<_128,_256,_256>;
+  using MmaTileShape        = Shape<_128,_128,_128>;
+  using ClusterShape        = Shape<_2,_1,_1>;
+  using PerSmTileShape_MNK  = Shape<_128,_128,_128>;
 
   run_gemm<ElementA, ElementB, ElementD, MmaTileShape, ClusterShape, PerSmTileShape_MNK>(a, b, a_scale, b_scale, out);
   return out;
@@ -196,9 +196,9 @@ at::Tensor mx_fp4_bf16(at::Tensor a, at::Tensor b, at::Tensor a_scale,
   using ElementB = cutlass::nv_float4_t<cutlass::float_e2m1_t>;
   using ElementD = cutlass::bfloat16_t;
 
-  using MmaTileShape        = Shape<_256,_256,_256>;
-  using ClusterShape        = Shape<_4,_4,_1>;
-  using PerSmTileShape_MNK  = Shape<_128,_256,_256>;
+  using MmaTileShape        = Shape<_128,_128,_128>;
+  using ClusterShape        = Shape<_2,_1,_1>;
+  using PerSmTileShape_MNK  = Shape<_128,_128,_128>;
 
   run_gemm<ElementA, ElementB, ElementD, MmaTileShape, ClusterShape, PerSmTileShape_MNK>(a, b, a_scale, b_scale, out);
   return out;
