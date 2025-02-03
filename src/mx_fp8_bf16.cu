@@ -48,7 +48,7 @@ void run_gemm(at::Tensor& a, at::Tensor& b, at::Tensor& a_scale,
 
   // B matrix configuration
   using         LayoutBTag  = cutlass::layout::ColumnMajor;                   // Layout type for B matrix operand
-  constexpr int AlignmentB  = 128;    // Memory access granularity/alignment of B matrix in units of elements (up to 16 bytes)
+  constexpr int AlignmentB  = GetAlignment<ElementB>();    // Memory access granularity/alignment of B matrix in units of elements (up to 16 bytes)
 
   // C/D matrix configuration
   using         ElementC    = cutlass::bfloat16_t;                            // Element type for C matrix operand
@@ -162,12 +162,58 @@ void run_gemm(at::Tensor& a, at::Tensor& b, at::Tensor& a_scale,
 }
 }
 
+void validate(at::Tensor a, at::Tensor b, at::Tensor a_scale, at::Tensor b_scale){
+    TORCH_CHECK(a.is_cuda(), "a must be CUDA tensor");
+    TORCH_CHECK(b.is_cuda(), "b must be CUDA tensor");
+    TORCH_CHECK(a_scale.is_cuda(), "a_scale must be CUDA tensor");
+    TORCH_CHECK(b_scale.is_cuda(), "b_scale must be CUDA tensor");
+
+    // Check matrix dimensions
+    TORCH_CHECK(a.dim() == 2, "a must be a matrix");
+    TORCH_CHECK(b.dim() == 2, "b must be a matrix");
+
+    // Get dimensions
+    auto M = a.size(0);
+    auto K = a.size(1);
+    auto N = b.size(1);
+
+    TORCH_CHECK(b.size(0) == K,
+        "Incompatible matrix dimensions: a is ", M, "x", K, " but b is ", b.size(0), "x", N);
+
+    // Needed for TMA store
+    TORCH_CHECK(N % 16 == 0, "N must be a multiple of 16 but got, ", N);
+
+    // Check 16-byte alignment for input tensors
+    TORCH_CHECK(
+        reinterpret_cast<std::uintptr_t>(a.data_ptr()) % 16 == 0,
+        "Input tensor 'a' must be 16-byte aligned");
+    TORCH_CHECK(
+        reinterpret_cast<std::uintptr_t>(b.data_ptr()) % 16 == 0,
+        "Input tensor 'b' must be 16-byte aligned");
+
+    auto ceil_div = [](auto a, auto b) { return (a + b - 1) / b; };
+    auto num_k_blocks = ceil_div(K, 32);
+    // For a_scale, we expect elements or M* ceil(K/32) elements
+    auto expected_a_scale_size = 128 * ceil_div(M, 128) * num_k_blocks;
+    TORCH_CHECK(a_scale.numel() == expected_a_scale_size, "Expected b_scale_size to be ", expected_a_scale_size, " but got ", a_scale.numel());
+
+    // For b_scale, we expect N * ceil(K/32) elements
+    auto expected_b_scale_size = 128 * ceil_div(N, 128) * num_k_blocks;
+    TORCH_CHECK(b_scale.numel() == expected_b_scale_size, "Expected a_scale_size to be ", expected_b_scale_size, " but got ", b_scale.numel());
+
+    // Check tensor strides for optimal memory layout
+    TORCH_CHECK(
+        a.stride(1) == 1,
+        "Input tensor 'a' must be contiguous in the K dimension (row-major)");
+    TORCH_CHECK(
+        b.stride(0) == 1,
+        "Input tensor 'b' must be contiguous in the K dimension (column-major)");
+}
+
+
 at::Tensor mx_fp8_bf16(at::Tensor a, at::Tensor b, at::Tensor a_scale,
                        at::Tensor b_scale) {
-  TORCH_CHECK(a.is_cuda(), "a must be CUDA tensor");
-  TORCH_CHECK(b.is_cuda(), "b must be CUDA tensor");
-  TORCH_CHECK(a_scale.is_cuda(), "a_scale must be CUDA tensor");
-  TORCH_CHECK(b_scale.is_cuda(), "b_scale must be CUDA tensor");
+  validate(a, b, a_scale, b_scale);
 
   auto out =
       at::empty({a.size(0), b.size(1)}, a.options().dtype(at::kBFloat16));
