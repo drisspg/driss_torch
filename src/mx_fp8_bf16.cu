@@ -181,7 +181,7 @@ void validate(at::Tensor a, at::Tensor b, at::Tensor a_scale, at::Tensor b_scale
         "Incompatible matrix dimensions: a is ", M, "x", K, " but b is ", b.size(0), "x", N);
 
     // Needed for TMA store
-    TORCH_CHECK(N % 16 == 0, "N must be a multiple of 16 but got, ", N);
+    TORCH_CHECK(N % 8 == 0, "N must be a multiple of 16 but got, ", N);
 
     // Check 16-byte alignment for input tensors
     TORCH_CHECK(
