@@ -75,7 +75,7 @@ def run_matrix_test(M: int, K: int, N: int) -> float:
         (384, 512, 640),
         # Non-aligned matrices
         (129, 256, 384),
-        (256, 384, 528),
+        (256, 384, 536),
         (133, 512, 528),
     ],
     ids=lambda x: f"{x[0]}x{x[1]}x{x[2]}",
