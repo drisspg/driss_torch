@@ -77,35 +77,46 @@ def sweep_mm(
     )
 
 
+def mx_fp8_bf16(
+    a: torch.Tensor, b: torch.Tensor, a_scale: torch.Tensor, b_scale: torch.Tensor
+) -> Tensor:
+    """Matrix multiplication between two FP8 tensors with E8M0 scaling.
+
+    Args:
+        x: Input tensor in FP8 format
+        w: Weight tensor in FP8 format
+        x_scale: E8M0 scale tensor for x with groupsize=32
+        w_scale: E8M0 scale tensor for w with groupsize=32
+
+    Returns:
+        torch.Tensor: Result tensor in BF16 format
+    """
+    return ops.mx_fp8_bf16(a, b, a_scale, b_scale)
 
 
-def mx_fp8_bf16(a: torch.Tensor, b: torch.Tensor, a_scale: torch.Tensor, b_scale: torch.Tensor) -> Tensor:
-   """Matrix multiplication between two FP8 tensors with E8M0 scaling.
-   
-   Args:
-       x: Input tensor in FP8 format
-       w: Weight tensor in FP8 format
-       x_scale: E8M0 scale tensor for x with groupsize=32
-       w_scale: E8M0 scale tensor for w with groupsize=32
+def mx_fp4_bf16(
+    a: torch.Tensor, b: torch.Tensor, a_scale: torch.Tensor, b_scale: torch.Tensor
+) -> Tensor:
+    """Matrix multiplication between two FP8 tensors with E8M0 scaling.
 
-   Returns:
-       torch.Tensor: Result tensor in BF16 format
-   """
-   return ops.mx_fp8_bf16(a, b, a_scale, b_scale)
+    Args:
+        x: Input tensor in FP8 format
+        w: Weight tensor in FP8 format
+        x_scale: E8M0 scale tensor for x with groupsize=32
+        w_scale: E8M0 scale tensor for w with groupsize=32
+
+    Returns:
+        torch.Tensor: Result tensor in BF16 format
+    """
+    return ops.mx_fp4_bf16(a, b, a_scale, b_scale)
 
 
-
-
-def mx_fp4_bf16(a: torch.Tensor, b: torch.Tensor, a_scale: torch.Tensor, b_scale: torch.Tensor) -> Tensor:
-   """Matrix multiplication between two FP8 tensors with E8M0 scaling.
-   
-   Args:
-       x: Input tensor in FP8 format
-       w: Weight tensor in FP8 format
-       x_scale: E8M0 scale tensor for x with groupsize=32
-       w_scale: E8M0 scale tensor for w with groupsize=32
-
-   Returns:
-       torch.Tensor: Result tensor in BF16 format
-   """
-   return ops.mx_fp4_bf16(a, b, a_scale, b_scale)
+def mx_fp8_quantize(
+    input: torch.Tensor,
+    block_size: int = 32,
+    axis: int = 1,
+    transpose: bool = False,
+    ScalarType: torch.dtype = torch.float8_e4m3fn,
+) -> (Tensor, Tensor):
+    """Quantize a tensor to FP8 format with E8M0 scaling."""
+    return ops.mx_fp8_quantize(input, block_size, axis, transpose, ScalarType)

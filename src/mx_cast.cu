@@ -1,305 +1,229 @@
+#include "include/mx_cast.h"
 #include <ATen/ATen.h>
-#include <ATen/core/Tensor.h>
-#include <cudnn_frontend.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/core/ScalarType.h>
 #include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/CUDAException.h>
+#include <c10/util/Float8_e4m3fn.h>
+#include <cooperative_groups.h>
+#include <cstdint>
+#include <cuda_bf16.h>
+#include <cuda_fp8.h>
+#include <cuda_runtime.h>
 
-#include <memory>
-#include <vector>
+// CUTLASS includes
+#include <cute/tensor.hpp>
+#include <cutlass/util/device_memory.h>
 
-namespace cudnn_wrapper {
+#include <cmath>
 
-namespace fe = cudnn_frontend;
+namespace driss_torch_kernels {
 
-// Helper macro for checking CUDNN errors
-#define CUDNN_CHECK(expr)                                               \
-    do {                                                                \
-        cudnnStatus_t status = (expr);                                  \
-        if (status != CUDNN_STATUS_SUCCESS) {                           \
-            auto msg = cudnnGetErrorString(status);                     \
-            TORCH_CHECK(false, "cuDNN error: ", msg);                   \
-        }                                                               \
-    } while (0)
+using namespace cute;
 
+__device__ __forceinline__ float roundToPowerOf2(float v) {
+  if (v <= 0)
+    return (v == 0) ? 1.0f : 0.0f;
 
-// Helper to create and manage CUDNN handle
-class CudnnHandleManager {
-public:
-    CudnnHandleManager() {
-        CUDNN_CHECK(cudnnCreate(&handle_));
-    }
+  int exp;
+  float mantissa = frexpf(v, &exp);
 
-    ~CudnnHandleManager() {
-        cudnnDestroy(handle_);
-    }
+  // If mantissa is exactly 0.5, we're already at a power of 2
+  if (mantissa == 0.5f) {
+    return v;
+  }
 
-    cudnnHandle_t get() const { return handle_; }
+  // Check if we should round up or down
+  if (mantissa > 0.5f) {
+    exp++; // Round up
+  }
 
-private:
-    cudnnHandle_t handle_;
+  // Return 2^exp
+  return ldexpf(1.0f, exp - 1);
+}
+
+__device__ __forceinline__ float
+get_fp8_max_pow_2(__nv_fp8_interpretation_t fp8_dtype) {
+  switch (fp8_dtype) {
+  case __NV_E4M3:
+    return 256.0f;
+  case __NV_E5M2:
+    return 57344.0f;
+  default:
+    return 0.0f; // Invalid dtype
+  }
+}
+
+template <typename inpt_type>
+__device__ __forceinline__ __nv_fp8_storage_t
+convert_to_fp8(inpt_type scaled_input, __nv_fp8_interpretation_t fp8_dtype) {
+  return __nv_cvt_float_to_fp8(scaled_input, __nv_saturation_t::__NV_SATFINITE,
+                               fp8_dtype);
+}
+
+__device__ __forceinline__ void compute_row_scales(const float abs_val,
+                                                   float *row_scales,
+                                                   int row_idx, int col_idx) {
+  // Use warp shuffle to compute the maximum
+  float max_val = abs_val;
+  for (int offset = 16; offset > 0; offset /= 2) {
+    float other_val = __shfl_down_sync(0xffffffff, max_val, offset);
+    max_val = max(max_val, other_val);
+  }
+
+  if (col_idx == 0) {
+    row_scales[row_idx] = roundToPowerOf2(max_val) / get_fp8_max_pow_2(__NV_E4M3);
+  }
+}
+
+template <typename Element, int InputSize, int NumRows>
+struct SharedMemory {
+  Element input_data[sizeof(Element) * InputSize];
+  float row_scales[InputSize];
 };
 
 
-// Main function to quantize a tensor to MXFP8 format
-std::tuple<at::Tensor, at::Tensor> block_scale_quantize_fp8(
-    at::Tensor input,
-    int64_t block_size = 32,
-    int64_t axis = 1,
-    bool transpose = false) {
+template <class Element, class TensorInput, class TensorOutput,
+          class TensorScale, class ThrShape, class BlockShape>
+__global__ void mx_fp8_quantize_kernel(TensorInput input, TensorOutput output,
+                                       TensorScale scale, ThrShape thr_shape, BlockShape blck_shape) {
 
-    TORCH_CHECK(input.is_cuda(), "Input tensor must be a CUDA tensor");
-    TORCH_CHECK(input.is_contiguous(), "Input tensor must be contiguous");
-    TORCH_CHECK(input.scalar_type() == at::kHalf || input.scalar_type() == at::kFloat ||
-               input.scalar_type() == at::kBFloat16,
-               "Input tensor must be float, half, or bfloat16");
-    TORCH_CHECK(block_size > 0, "Block size must be positive");
-    TORCH_CHECK(axis >= 0 && axis < input.dim(), "Axis must be within tensor dimensions");
+  // Slice the tensors to obtain a view into each tile.
+  Tensor tile_input = input(make_coord(_, _), blockIdx.x, blockIdx.y);
+  Tensor tile_output = output(make_coord(_, _), blockIdx.x, blockIdx.y);
+  Tensor tile_scale = scale(make_coord(_, _), blockIdx.x, blockIdx.y);
 
-    // Get current CUDA device
-    at::cuda::CUDAGuard device_guard(input.device());
+  // Define shared memory
+  auto smem_shape = thr_shape;
+  constexpr auto num_rows = size<0>(thr_shape);
+  auto smem_layout = make_layout(smem_shape, LayoutRight());
 
-    // Create CUDNN handle
-    CudnnHandleManager handle_manager;
-    auto handle = handle_manager.get();
+  __shared__ SharedMemory<Element, size(smem_shape), num_rows> smem;
 
-    // Set the stream
-    CUDNN_CHECK(cudnnSetStream(handle, at::cuda::getCurrentCUDAStream()));
+  using SmemLayout = decltype(smem_layout);
+  using SmemArray = array_aligned<Element, cosize_v<SmemLayout>>;
+  SmemArray &input_smem = *reinterpret_cast<SmemArray *>(smem.input_data);
 
-    // Create graph
-    fe::graph::Graph graph;
+  // Create a tensor view into shared memory with the 32x32 shape
+  auto smem_ptr = make_smem_ptr(input_smem.data());
+  auto smem_tensor = make_tensor(smem_ptr, smem_layout);
 
-    // Configure graph data types
-    auto input_data_type = fe::DataType_t::FLOAT;
-    if (input.scalar_type() == at::kHalf) {
-        input_data_type = fe::DataType_t::HALF;
-    } else if (input.scalar_type() == at::kBFloat16) {
-        input_data_type = fe::DataType_t::BFLOAT16;
+  auto smem_tiled_input = tiled_divide(tile_input, smem_shape);
+  auto sub_tiled_output = tiled_divide(tile_output, smem_shape);
+  auto sub_tiled_scale = tiled_divide(tile_scale, smem_shape);
+
+  auto row_idx = threadIdx.y;
+  auto col_idx = threadIdx.x;
+
+  #pragma unroll
+  for (auto i{0}; i < get<0>(blck_shape)/num_rows; i++) {
+    auto input_slice = smem_tiled_input(make_coord(_, _), i, 0);
+    auto scale_slice = sub_tiled_scale(make_coord(_, _), i, 0);
+    int32_t tid = threadIdx.x + threadIdx.y * blockDim.x;
+    cooperative_copy<size(thr_shape)>(tid, input_slice, smem_tensor);
+    __syncthreads();
+    auto abs =
+        std::abs(static_cast<float>(smem_tensor(row_idx, col_idx)));
+    // Compute column max and store in col_maxes
+    compute_row_scales(abs, smem.row_scales, row_idx, col_idx);
+    __syncthreads();
+
+    auto scale = smem.row_scales[row_idx];
+    auto inverse_scale = 1 / smem.row_scales[row_idx];
+    auto scaled = static_cast<float>(smem_tensor(row_idx, col_idx)) * inverse_scale;
+    auto out = convert_to_fp8(scaled, __NV_E4M3);
+    auto output_slice = sub_tiled_output(make_coord(_, _), i, 0);
+    output_slice(row_idx, col_idx) = out;
+    if (col_idx == 0) {
+      auto converted = __nv_cvt_float_to_e8m0(scale, __NV_SATFINITE, cudaRoundMode::cudaRoundPosInf);
+      scale_slice(row_idx, 0) = converted;
     }
+  }
 
-    graph.set_io_data_type(input_data_type)
-         .set_intermediate_data_type(fe::DataType_t::FLOAT)
-         .set_compute_data_type(fe::DataType_t::FLOAT);
-
-    // Get tensor dimensions
-    std::vector<int64_t> dims_vec(input.sizes().begin(), input.sizes().end());
-    std::vector<int64_t> strides_vec(input.strides().begin(), input.strides().end());
-
-    // Create tensor attributes
-    auto tensor_attrs = fe::graph::Tensor_attributes()
-                          .set_data_type(input_data_type);
-
-    // Set dimensions and strides
-    if (dims_vec.size() == 2) {
-        tensor_attrs.set_dim({static_cast<int>(dims_vec[0]),
-                            static_cast<int>(dims_vec[1]), 1, 1})
-                  .set_stride({static_cast<int>(strides_vec[0]),
-                             static_cast<int>(strides_vec[1]), 0, 0});
-    } else if (dims_vec.size() == 3) {
-        tensor_attrs.set_dim({static_cast<int>(dims_vec[0]),
-                            static_cast<int>(dims_vec[1]),
-                            static_cast<int>(dims_vec[2]), 1})
-                  .set_stride({static_cast<int>(strides_vec[0]),
-                             static_cast<int>(strides_vec[1]),
-                             static_cast<int>(strides_vec[2]), 0});
-    } else if (dims_vec.size() == 4) {
-        tensor_attrs.set_dim({static_cast<int>(dims_vec[0]),
-                            static_cast<int>(dims_vec[1]),
-                            static_cast<int>(dims_vec[2]),
-                            static_cast<int>(dims_vec[3])})
-                  .set_stride({static_cast<int>(strides_vec[0]),
-                             static_cast<int>(strides_vec[1]),
-                             static_cast<int>(strides_vec[2]),
-                             static_cast<int>(strides_vec[3])});
-    } else {
-        TORCH_CHECK(false, "Input tensor must have 2, 3, or 4 dimensions");
-    }
-
-    // Add tensor to graph
-    auto X = graph.tensor(tensor_attrs);
-
-    // Configure quantization
-    auto quantize_attrs = fe::graph::Block_scale_quantize_attributes()
-                            .set_block_size(static_cast<int>(block_size))
-                            .set_axis(static_cast<int>(axis))
-                            .set_transpose(transpose);
-
-    // Add quantization operation to graph
-    auto [Y, mx_scale] = graph.block_scale_quantize(X, quantize_attrs);
-
-    // Set outputs
-    Y->set_output(true).set_data_type(fe::DataType_t::FP8_E5M2);
-    mx_scale->set_output(true).set_data_type(fe::DataType_t::FP8_E8M0);
-
-    // Validate and build the graph
-    TORCH_CHECK(graph.validate().is_good(), "Graph validation failed");
-    TORCH_CHECK(graph.build_operation_graph(handle).is_good(), "Build operation graph failed");
-    TORCH_CHECK(graph.create_execution_plans({fe::HeurMode_t::FALLBACK}).is_good(), "Create execution plans failed");
-    TORCH_CHECK(graph.check_support(handle).is_good(), "Check support failed");
-    TORCH_CHECK(graph.build_plans(handle).is_good(), "Build plans failed");
-
-    // Calculate output sizes
-    auto total_elements = input.numel();
-    auto scale_elements = total_elements / block_size;
-
-    // Create output tensors
-    auto options = input.options().dtype(at::kChar); // int8_t for FP8
-    auto output = at::empty(input.sizes(), options);
-    auto scale = at::empty({scale_elements}, options);
-
-    // Create workspace
-    auto workspace_size = graph.get_workspace_size();
-    auto workspace = at::empty({static_cast<int64_t>(workspace_size)},
-                              at::TensorOptions().dtype(at::kChar).device(input.device()));
-
-    // Set up variant pack
-    std::unordered_map<std::shared_ptr<fe::graph::Tensor_attributes>, void*> variant_pack = {
-        {X, input.data_ptr()},
-        {Y, output.data_ptr()},
-        {mx_scale, scale.data_ptr()}
-    };
-
-    // Execute the graph
-    TORCH_CHECK(graph.execute(handle, variant_pack, workspace.data_ptr()).is_good(),
-               "Graph execution failed");
-
-    // Return both quantized tensor and scale factors
-    return {output, scale};
 }
 
-// Alternative function for NVFP4 quantization
-std::tuple<at::Tensor, at::Tensor> block_scale_quantize_fp4(
-    at::Tensor input,
-    int64_t block_size = 16,
-    int64_t axis = 1,
-    bool transpose = false) {
-
-    TORCH_CHECK(input.is_cuda(), "Input tensor must be a CUDA tensor");
-    TORCH_CHECK(input.is_contiguous(), "Input tensor must be contiguous");
-    TORCH_CHECK(input.scalar_type() == at::kHalf || input.scalar_type() == at::kFloat ||
-               input.scalar_type() == at::kBFloat16,
-               "Input tensor must be float, half, or bfloat16");
-
-    // Similar implementation as above but with FP4_E2M1 data type
-    CudnnHandleManager handle_manager;
-    auto handle = handle_manager.get();
-    CUDNN_CHECK(cudnnSetStream(handle, at::cuda::getCurrentCUDAStream()));
-
-    fe::graph::Graph graph;
-
-    auto input_data_type = fe::DataType_t::FLOAT;
-    if (input.scalar_type() == at::kHalf) {
-        input_data_type = fe::DataType_t::HALF;
-    } else if (input.scalar_type() == at::kBFloat16) {
-        input_data_type = fe::DataType_t::BFLOAT16;
-    }
-
-    graph.set_io_data_type(input_data_type)
-         .set_intermediate_data_type(fe::DataType_t::FLOAT)
-         .set_compute_data_type(fe::DataType_t::FLOAT);
-
-    // Setup tensor and quantization operation similar to FP8 version
-    // but with FP4_E2M1 output data type
-
-    std::vector<int64_t> dims_vec(input.sizes().begin(), input.sizes().end());
-    std::vector<int64_t> strides_vec(input.strides().begin(), input.strides().end());
-
-    auto tensor_attrs = fe::graph::Tensor_attributes()
-                          .set_data_type(input_data_type);
-
-    if (dims_vec.size() == 2) {
-        tensor_attrs.set_dim({static_cast<int>(dims_vec[0]),
-                            static_cast<int>(dims_vec[1]), 1, 1})
-                  .set_stride({static_cast<int>(strides_vec[0]),
-                             static_cast<int>(strides_vec[1]), 0, 0});
-    } else if (dims_vec.size() == 3) {
-        tensor_attrs.set_dim({static_cast<int>(dims_vec[0]),
-                            static_cast<int>(dims_vec[1]),
-                            static_cast<int>(dims_vec[2]), 1})
-                  .set_stride({static_cast<int>(strides_vec[0]),
-                             static_cast<int>(strides_vec[1]),
-                             static_cast<int>(strides_vec[2]), 0});
-    } else if (dims_vec.size() == 4) {
-        tensor_attrs.set_dim({static_cast<int>(dims_vec[0]),
-                            static_cast<int>(dims_vec[1]),
-                            static_cast<int>(dims_vec[2]),
-                            static_cast<int>(dims_vec[3])})
-                  .set_stride({static_cast<int>(strides_vec[0]),
-                             static_cast<int>(strides_vec[1]),
-                             static_cast<int>(strides_vec[2]),
-                             static_cast<int>(strides_vec[3])});
-    } else {
-        TORCH_CHECK(false, "Input tensor must have 2, 3, or 4 dimensions");
-    }
-
-    auto X = graph.tensor(tensor_attrs);
-
-    auto quantize_attrs = fe::graph::Block_scale_quantize_attributes()
-                            .set_block_size(static_cast<int>(block_size))
-                            .set_axis(static_cast<int>(axis))
-                            .set_transpose(transpose);
-
-    auto [Y, mx_scale] = graph.block_scale_quantize(X, quantize_attrs);
-
-    // Use FP4_E2M1 for output instead of FP8_E5M2
-    Y->set_output(true).set_data_type(fe::DataType_t::FP4_E2M1);
-    // Use FP8_E4M3 for scale factors
-    mx_scale->set_output(true).set_data_type(fe::DataType_t::FP8_E4M3);
-
-    // Build and execute the graph
-    TORCH_CHECK(graph.validate().is_good(), "Graph validation failed");
-    TORCH_CHECK(graph.build_operation_graph(handle).is_good(), "Build operation graph failed");
-    TORCH_CHECK(graph.create_execution_plans({fe::HeurMode_t::FALLBACK}).is_good(), "Create execution plans failed");
-    TORCH_CHECK(graph.check_support(handle).is_good(), "Check support failed");
-    TORCH_CHECK(graph.build_plans(handle).is_good(), "Build plans failed");
-
-    // Calculate output sizes (FP4 is packed 2 elements per byte)
-    auto total_elements = input.numel();
-    auto scale_elements = total_elements / block_size;
-
-    // Create output tensors
-    auto options = input.options().dtype(at::kChar);
-    auto output = at::empty({total_elements / 2}, options); // Half the size for FP4
-    auto scale = at::empty({scale_elements}, options);
-
-    auto workspace_size = graph.get_workspace_size();
-    auto workspace = at::empty({static_cast<int64_t>(workspace_size)},
-                              at::TensorOptions().dtype(at::kChar).device(input.device()));
-
-    std::unordered_map<std::shared_ptr<fe::graph::Tensor_attributes>, void*> variant_pack = {
-        {X, input.data_ptr()},
-        {Y, output.data_ptr()},
-        {mx_scale, scale.data_ptr()}
-    };
-
-    TORCH_CHECK(graph.execute(handle, variant_pack, workspace.data_ptr()).is_good(),
-               "Graph execution failed");
-
-    return {output, scale};
-}
-
-} // namespace cudnn_wrapper
-
+} // namespace driss_torch_kernels
 
 namespace driss_torch {
+using namespace cute;
 
-std::tuple<at::Tensor, at::Tensor> mx_fp8_quantize(
-    at::Tensor input,
-    int64_t block_size = 32,
-    int64_t axis = 1,
-    bool transpose = false) {
-    return cudnn_wrapper::block_scale_quantize_fp8(input, block_size, axis, transpose);
+std::tuple<at::Tensor, at::Tensor> mx_fp8_quantize(at::Tensor input,
+                                                   int64_t block_size,
+                                                   int64_t axis, bool transpose,
+                                                   c10::ScalarType fp8_type) {
+
+  TORCH_CHECK(input.is_cuda(), "Input tensor must be a CUDA tensor");
+  TORCH_CHECK(input.is_contiguous(), "Input tensor must be contiguous");
+  TORCH_CHECK(input.scalar_type() == at::kHalf ||
+                  input.scalar_type() == at::kFloat ||
+                  input.scalar_type() == at::kBFloat16,
+              "Input tensor must be float, half, or bfloat16");
+  TORCH_CHECK(block_size > 0 && block_size <= 32,
+              "Block size must be positive and <= 32");
+  TORCH_CHECK(input.dim() == 2,
+              "Input tensor must be 2D for CUTLASS implementation");
+  TORCH_CHECK(fp8_type == at::kFloat8_e4m3fn || fp8_type == at::kFloat8_e5m2,
+              "FP8 type must be Float8_e4m3fn or Float8_e5m2");
+
+  // Get tensor dimensions
+  auto input_shape = input.sizes();
+  auto input_strides = input.strides();
+
+  TORCH_CHECK(input.dim() == 2, "Only support 2d tensor for now");
+  int64_t m = input_shape[0];
+  int64_t n = input_shape[1];
+  auto num_k_blocks = cutlass::ceil_div(n, 32);
+  auto total_blocks = m * num_k_blocks;
+
+  // Create output tensors
+  auto output = at::empty_like(input, input.options().dtype(fp8_type));
+  auto scale =
+      at::empty({total_blocks}, input.options().dtype(at::kFloat8_e8m0fnu));
+
+  auto tensor_input_shape = make_shape(m, n);
+  auto tensor_scale_shape = make_shape(m, num_k_blocks);
+
+  auto input_ptr = static_cast<__nv_bfloat16 *>(input.data_ptr());
+  auto scale_ptr = static_cast<__nv_fp8_storage_t *>(scale.data_ptr());
+  auto output_ptr = static_cast<__nv_fp8_storage_t *>(output.data_ptr());
+
+  Tensor tensor_input =
+      make_tensor(make_gmem_ptr(input_ptr), make_layout(tensor_input_shape, LayoutRight()));
+  Tensor tensor_scale =
+      make_tensor(make_gmem_ptr(scale_ptr), make_layout(tensor_scale_shape, LayoutRight()));
+  Tensor tensor_ouput =
+      make_tensor(make_gmem_ptr(output_ptr), make_layout(tensor_input_shape, LayoutRight()));
+
+  // Keep it easy for now
+  auto block_shape = make_shape(Int<128>{}, Int<32>{});
+  auto scale_shape = make_shape(get<0>(block_shape), Int<1>{});
+  TORCH_CHECK(evenly_divides(tensor_input_shape, block_shape),
+              "Need block shape to evenly divide the input tensor for now");
+
+
+  // These will be used to determine the CUDA kernel grid dimensions.
+  Tensor tiled_tensor_input = tiled_divide(tensor_input, block_shape);
+  Tensor tiled_tensor_ouput = tiled_divide(tensor_ouput, block_shape);
+  Tensor tiled_tensor_scale = tiled_divide(tensor_scale, scale_shape);
+
+  // Thread arrangement
+  auto thr_shape = make_shape(Int<8>{}, Int<32>{});
+  dim3 gridDim(
+      size<1>(tiled_tensor_input),
+      size<2>(tiled_tensor_input)); // Grid shape corresponds to modes m' and n'
+  dim3 blockDim(size<1>(thr_shape), size<0>(thr_shape));
+
+  //
+  // Launch the kernel
+  //
+  driss_torch_kernels::mx_fp8_quantize_kernel<__nv_bfloat16>
+      <<<gridDim, blockDim>>>(tiled_tensor_input, tiled_tensor_ouput,
+                              tiled_tensor_scale, thr_shape, block_shape);
+  // tiled_copy);
+
+  // Check for CUDA errors
+  C10_CUDA_CHECK(cudaGetLastError());
+
+  return {output, scale};
 }
 
-std::tuple<at::Tensor, at::Tensor> mx_fp4_quantize(
-    at::Tensor input,
-    int64_t block_size = 16,
-    int64_t axis = 1,
-    bool transpose = false) {
-    return cudnn_wrapper::block_scale_quantize_fp4(input, block_size, axis, transpose);
-}
-
-
-
-} // driss_torch
-// Wrapper functions for PyTorch extension
+} // namespace driss_torch
