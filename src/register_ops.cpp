@@ -7,15 +7,16 @@
 #include "saturated_cast.h"
 #include "sweep_mm.h"
 #include "mx_fp8_bf16.h"
+#include "mx_cast.h"
 
 TORCH_LIBRARY(DrissTorch, m) {
   m.impl_abstract_pystub("driss_torch.abstract_impls");
-  //   Saturated cast func from bf16 to fp8 types
+  //  Saturated cast func from bf16 to fp8 types
   m.def("saturated_cast(Tensor input, Tensor scale, ScalarType dtype, bool "
         "transpose) -> Tensor");
   m.impl("saturated_cast", c10::DispatchKey::CUDA,
          TORCH_FN(driss_torch::saturated_cast));
-  //   Amax func
+  //  Amax func
   m.def("amax(Tensor input) -> Tensor");
   m.impl("amax", c10::DispatchKey::CUDA, TORCH_FN(driss_torch::amax));
   // Dynamic cast to fp8
@@ -27,7 +28,11 @@ TORCH_LIBRARY(DrissTorch, m) {
   m.impl("sweep_mm", c10::DispatchKey::CUDA, TORCH_FN(driss_torch::sweep_mm));
   // scaled_mm_bf16
   m.def("mx_fp8_bf16(Tensor a, Tensor b, Tensor a_scale, Tensor b_scale) -> Tensor");
-  m.impl("mx_fp8_bf16", c10::DispatchKey::CUDA, TORCH_FN(driss_torch::mx_fp8_bf16));  
-   m.def("mx_fp4_bf16(Tensor a, Tensor b, Tensor a_scale, Tensor b_scale) -> Tensor");
-  m.impl("mx_fp4_bf16", c10::DispatchKey::CUDA, TORCH_FN(driss_torch::mx_fp4_bf16));  
+  m.impl("mx_fp8_bf16", c10::DispatchKey::CUDA, TORCH_FN(driss_torch::mx_fp8_bf16));
+  m.def("mx_fp4_bf16(Tensor a, Tensor b, Tensor a_scale, Tensor b_scale) -> Tensor");
+  m.impl("mx_fp4_bf16", c10::DispatchKey::CUDA, TORCH_FN(driss_torch::mx_fp4_bf16));
+// mx cast
+  m.def("mx_fp8_quantize(Tensor input, int block_size, int axis, bool transpose, ScalarType fp8_type) -> (Tensor, Tensor)");
+  m.impl("mx_fp8_quantize", c10::DispatchKey::CUDA, TORCH_FN(driss_torch::mx_fp8_quantize));
+
 }
