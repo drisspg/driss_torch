@@ -1,4 +1,5 @@
 #include "cutlass/cutlass.h"
+#if defined(CUDA_VERSION) && CUDA_VERSION >= 12080
 
 #include "cute/tensor.hpp"
 #include "cutlass/detail/sm100_blockscaled_layout.hpp"
@@ -8,6 +9,7 @@
 #include "cutlass/gemm/collective/collective_builder.hpp"
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "cutlass/util/packed_stride.hpp"
+#endif
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/core/ScalarType.h>
@@ -21,7 +23,7 @@
 
 namespace driss_torch {
 namespace {
-
+#if defined(CUDA_VERSION) && CUDA_VERSION >= 12080
 using namespace cute;
 
 template<typename Element>
@@ -158,6 +160,8 @@ void run_gemm(at::Tensor& a, at::Tensor& b, at::Tensor& a_scale,
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
 }
+
+#endif
 }
 
 void validate(at::Tensor a, at::Tensor b, at::Tensor a_scale, at::Tensor b_scale){
@@ -211,6 +215,7 @@ void validate(at::Tensor a, at::Tensor b, at::Tensor a_scale, at::Tensor b_scale
 
 at::Tensor mx_fp8_bf16(at::Tensor a, at::Tensor b, at::Tensor a_scale,
                        at::Tensor b_scale) {
+  #if defined(CUDA_VERSION) && CUDA_VERSION >= 12080
   validate(a, b, a_scale, b_scale);
   auto M = a.size(0);
   auto K = a.size(1);
@@ -228,10 +233,15 @@ at::Tensor mx_fp8_bf16(at::Tensor a, at::Tensor b, at::Tensor a_scale,
 
   run_gemm<ElementA, ElementB, ElementD, MmaTileShape, ClusterShape, PerSmTileShape_MNK>(a, b, a_scale, b_scale, out, M, K, N);
   return out;
+  #else
+  TORCH_CHECK(false, "Not built for this platform!")
+  #endif
+  return at::Tensor();
 }
 
 at::Tensor mx_fp4_bf16(at::Tensor a, at::Tensor b, at::Tensor a_scale,
                        at::Tensor b_scale) {
+  #if defined(CUDA_VERSION) && CUDA_VERSION >= 12080
   TORCH_CHECK(a.is_cuda(), "a must be CUDA tensor");
   TORCH_CHECK(b.is_cuda(), "b must be CUDA tensor");
   TORCH_CHECK(a_scale.is_cuda(), "a_scale must be CUDA tensor");
@@ -253,6 +263,10 @@ at::Tensor mx_fp4_bf16(at::Tensor a, at::Tensor b, at::Tensor a_scale,
 
   run_gemm<ElementA, ElementB, ElementD, MmaTileShape, ClusterShape, PerSmTileShape_MNK>(a, b, a_scale, b_scale, out, M, K, N);
   return out;
+  #else
+  TORCH_CHECK(false, "Not built for this platform!")
+  #endif
+  return at::Tensor();
 }
 
 } // namespace driss_torch
