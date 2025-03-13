@@ -12,6 +12,17 @@ namespace cudnn_wrapper {
 
 namespace fe = cudnn_frontend;
 
+// Helper macro for checking CUDNN errors
+#define CUDNN_CHECK(expr)                                               \
+    do {                                                                \
+        cudnnStatus_t status = (expr);                                  \
+        if (status != CUDNN_STATUS_SUCCESS) {                           \
+            auto msg = cudnnGetErrorString(status);                     \
+            TORCH_CHECK(false, "cuDNN error: ", msg);                   \
+        }                                                               \
+    } while (0)
+
+
 // Helper to create and manage CUDNN handle
 class CudnnHandleManager {
 public:
@@ -29,18 +40,9 @@ private:
     cudnnHandle_t handle_;
 };
 
-// Helper macro for checking CUDNN errors
-#define CUDNN_CHECK(expr)                                               \
-    do {                                                                \
-        cudnnStatus_t status = (expr);                                  \
-        if (status != CUDNN_STATUS_SUCCESS) {                           \
-            auto msg = cudnnGetErrorString(status);                     \
-            TORCH_CHECK(false, "cuDNN error: ", msg);                   \
-        }                                                               \
-    } while (0)
 
 // Main function to quantize a tensor to MXFP8 format
-std::vector<at::Tensor> block_scale_quantize_fp8(
+std::tuple<at::Tensor, at::Tensor> block_scale_quantize_fp8(
     at::Tensor input,
     int64_t block_size = 32,
     int64_t axis = 1,
@@ -166,7 +168,7 @@ std::vector<at::Tensor> block_scale_quantize_fp8(
 }
 
 // Alternative function for NVFP4 quantization
-std::vector<at::Tensor> block_scale_quantize_fp4(
+std::tuple<at::Tensor, at::Tensor> block_scale_quantize_fp4(
     at::Tensor input,
     int64_t block_size = 16,
     int64_t axis = 1,
@@ -281,16 +283,16 @@ std::vector<at::Tensor> block_scale_quantize_fp4(
 
 namespace driss_torch {
 
-std::vector<torch::Tensor> mx_fp8_quantize(
-    torch::Tensor input,
+std::tuple<at::Tensor, at::Tensor> mx_fp8_quantize(
+    at::Tensor input,
     int64_t block_size = 32,
     int64_t axis = 1,
     bool transpose = false) {
     return cudnn_wrapper::block_scale_quantize_fp8(input, block_size, axis, transpose);
 }
 
-std::vector<torch::Tensor> mx_fp4_quantize(
-    torch::Tensor input,
+std::tuple<at::Tensor, at::Tensor> mx_fp4_quantize(
+    at::Tensor input,
     int64_t block_size = 16,
     int64_t axis = 1,
     bool transpose = false) {

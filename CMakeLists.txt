@@ -18,12 +18,27 @@ execute_process(
     COMMAND_ERROR_IS_FATAL ANY
 )
 
-# Set CUDA architecture to SM90a
-set(CMAKE_CUDA_ARCHITECTURES 100a)
-set(TORCH_CUDA_ARCH_LIST "10.0a")
+# Set CUDA architecture to SM100a
+set(CMAKE_CUDA_ARCHITECTURES 90a)
+set(TORCH_CUDA_ARCH_LIST "9.0a")
 
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH};${PT_CMAKE_PREFIX})
 find_package(Torch REQUIRED CONFIG)
+
+# ---- cuDNN dependency setup ----
+# Set system-installed cuDNN paths directly
+set(CUDNN_INCLUDE_DIR "/usr/include" CACHE PATH "cuDNN include directory")
+set(CUDNN_LIBRARY "/usr/lib64/libcudnn.so" CACHE FILEPATH "cuDNN library")
+
+# Add cuDNN frontend from submodule
+set(CUDNN_FRONTEND_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/cudnn-frontend/include" CACHE PATH "cuDNN frontend include directory")
+
+# Verify cuDNN frontend header exists in the submodule
+if(NOT EXISTS "${CUDNN_FRONTEND_INCLUDE_DIR}/cudnn_frontend.h")
+    message(FATAL_ERROR "Could not find cudnn_frontend.h in submodule. Please make sure the submodule is properly initialized.")
+endif()
+
+message(STATUS "Using cuDNN frontend from submodule: ${CUDNN_FRONTEND_INCLUDE_DIR}")
 
 # driss_torch source files - exclude scaled_mm_kernels by default
 file(GLOB_RECURSE CU_SOURCES "src/*.cu")
@@ -59,12 +74,29 @@ target_include_directories(driss_torch PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cutlass/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cutlass/tools/util/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cutlass/tools/library/include
+    ${CUDNN_INCLUDE_DIR}
+    ${CUDNN_FRONTEND_INCLUDE_DIR}
 )
 
-# Link the library to the Torch library
-target_link_libraries(driss_torch PRIVATE ${TORCH_LIBRARIES})
+# Create a cuDNN target for linking
+add_library(cudnn INTERFACE)
+target_include_directories(cudnn INTERFACE
+    ${CUDNN_INCLUDE_DIR}
+    ${CUDNN_FRONTEND_INCLUDE_DIR}
+)
+target_link_libraries(cudnn INTERFACE ${CUDNN_LIBRARY})
+
+# Link the library to the Torch library and cuDNN
+target_link_libraries(driss_torch PRIVATE ${TORCH_LIBRARIES} cudnn)
 
 # Install the library to the wheel distribution
 install(TARGETS driss_torch
     LIBRARY DESTINATION driss_torch/lib
 )
+
+# Print some configuration information
+message(STATUS "CUDA architecture: ${CMAKE_CUDA_ARCHITECTURES}")
+message(STATUS "cuDNN include directory: ${CUDNN_INCLUDE_DIR}")
+message(STATUS "cuDNN frontend include directory: ${CUDNN_FRONTEND_INCLUDE_DIR}")
+message(STATUS "cuDNN library: ${CUDNN_LIBRARY}")
+message(STATUS "PyTorch prefix path: ${PT_CMAKE_PREFIX}")
