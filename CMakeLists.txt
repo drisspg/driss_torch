@@ -18,6 +18,10 @@ execute_process(
     COMMAND_ERROR_IS_FATAL ANY
 )
 
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
 # Set CUDA architecture to SM100a
 set(CMAKE_CUDA_ARCHITECTURES 100a)
 set(TORCH_CUDA_ARCH_LIST "10.0a")
