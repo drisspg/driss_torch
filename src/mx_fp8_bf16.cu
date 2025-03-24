@@ -1,5 +1,5 @@
 #include "cutlass/cutlass.h"
-#if defined(CUDA_VERSION) && CUDA_VERSION >= 12080
+// #if defined(CUDA_VERSION) && CUDA_VERSION >= 12080
 
 #include "cute/tensor.hpp"
 #include "cutlass/detail/sm100_blockscaled_layout.hpp"
@@ -9,7 +9,7 @@
 #include "cutlass/gemm/collective/collective_builder.hpp"
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "cutlass/util/packed_stride.hpp"
-#endif
+// #endif
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/core/ScalarType.h>
