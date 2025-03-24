@@ -73,20 +73,16 @@ convert_to_fp8(inpt_type scaled_input, __nv_fp8_interpretation_t fp8_dtype) {
                                fp8_dtype);
 }
 
-template <typename RowTensor>
-__device__ __forceinline__ void compute_row_scales(const float abs_val,
-                                                  RowTensor row_scales,
-                                                  int row_idx, int col_idx, auto num_rows) {
+__device__ __forceinline__ float compute_row_scales(const float abs_val, int row_idx, int col_idx, auto num_rows) {
   typedef cub::WarpReduce<float> WarpReduce;
   __shared__ typename WarpReduce::TempStorage temp_storage[num_rows];
 
   // Perform the warp-level reduction using CUB
   float max_val = WarpReduce(temp_storage[row_idx]).Reduce(abs_val, cub::Max());
+  // Broadcast the result from lane 0 to all threads in the warp
+  max_val = __shfl_sync(0xffffffff, max_val, 0);  // 0xffffffff is the mask for all threads
 
-  // Only the first thread in the warp writes the result
-  if (col_idx == 0) {
-    row_scales(row_idx, col_idx) = roundToPowerOf2(max_val) / get_fp8_max_pow_2(__NV_E4M3);
-  }
+  return roundToPowerOf2(max_val) / get_fp8_max_pow_2(__NV_E4M3);
 }
 
 template <typename Element, int InputSize, int NumRows, int NumInnerTiles>
@@ -94,7 +90,6 @@ struct SharedMemory {
   // Expanded to hold multiple tiles of input data
   Element input_data[NumInnerTiles * sizeof(Element) * InputSize]; // Assuming up to 4 tiles, adjust as needed
   __nv_fp8_storage_t quantized_data[NumInnerTiles * InputSize];
-  float row_scales[NumInnerTiles * NumRows];
   __nv_fp8_storage_t row_scales_e8m0[NumInnerTiles * NumRows];
 };
 
@@ -123,13 +118,11 @@ __global__ void mx_fp8_quantize_kernel(TensorInput input, TensorOutput output,
   auto output_smem_tensor = setup_smem_tensor<__nv_fp8_storage_t>(smem.quantized_data, smem_layout);
 
   // Scale tensors
-  auto scale_smem_tensor = setup_smem_tensor<float>(smem.row_scales, smem_scale_layout);
   auto scale_smem_tensor_e8m0 = setup_smem_tensor<__nv_fp8_storage_t>(smem.row_scales_e8m0, smem_scale_layout);
 
   // Tile divide for inner loop
   auto tiled_smem_tensor = tiled_divide(input_smem_tensor, thr_shape);
   auto tiled_output_smem_tensor = tiled_divide(output_smem_tensor, thr_shape);
-  auto tiled_scale_smem_tensor = tiled_divide(scale_smem_tensor, thr_shape);
   auto tiled_scale_smem_tensor_e8m0 = tiled_divide(scale_smem_tensor_e8m0, thr_shape);
 
   auto row_idx = threadIdx.y;
@@ -141,18 +134,16 @@ __global__ void mx_fp8_quantize_kernel(TensorInput input, TensorOutput output,
   for (auto i = 0; i < num_tiles; i++) {
     auto tile_tensor = tiled_smem_tensor(make_coord(_, _), i, 0);
     auto sub_tiled_output = tiled_output_smem_tensor(make_coord(_, _), i, 0);
-    auto sub_tiled_scale = tiled_scale_smem_tensor(make_coord(_, _), i, 0);
     auto sub_tiled_scale_e8m0 = tiled_scale_smem_tensor_e8m0(make_coord(_, _), i, 0);
 
     // Calculate absolute values
     auto abs = std::abs(static_cast<float>(tile_tensor(row_idx, col_idx)));
 
     // Compute row scales
-    compute_row_scales(abs, sub_tiled_scale, row_idx, col_idx, num_rows);
+    auto scale = compute_row_scales(abs, row_idx, col_idx, num_rows);
     __syncthreads();
 
     // Apply scaling and convert to FP8
-    auto scale = sub_tiled_scale(row_idx, 0);
     auto inverse_scale = 1 / scale;
     auto scaled = static_cast<float>(tile_tensor(row_idx, col_idx)) * inverse_scale;
     auto out = convert_to_fp8(scaled, __NV_E4M3);
@@ -234,7 +225,7 @@ std::tuple<at::Tensor, at::Tensor> mx_fp8_quantize(at::Tensor input,
   Tensor tiled_tensor_scale = tiled_divide(tensor_scale, scale_shape);
 
   // Thread arrangement
-  auto thr_shape = make_shape(Int<32>{}, Int<32>{});
+  auto thr_shape = make_shape(Int<8>{}, Int<32>{});
   dim3 gridDim(
       size<1>(tiled_tensor_input),
       size<2>(tiled_tensor_input)); // Grid shape corresponds to modes m' and n'
