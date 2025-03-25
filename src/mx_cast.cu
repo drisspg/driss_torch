@@ -77,12 +77,19 @@ __device__ __forceinline__ float compute_row_scales(const float abs_val, int row
   typedef cub::WarpReduce<float> WarpReduce;
   __shared__ typename WarpReduce::TempStorage temp_storage[num_rows];
 
-  // Perform the warp-level reduction using CUB
-  float max_val = WarpReduce(temp_storage[row_idx]).Reduce(abs_val, cub::Max());
-  // Broadcast the result from lane 0 to all threads in the warp
-  max_val = __shfl_sync(0xffffffff, max_val, 0);  // 0xffffffff is the mask for all threads
+  // Perform reduction in log2 space
+  float log2_val = __log2f(abs_val);
+  float max_log2 = WarpReduce(temp_storage[row_idx]).Reduce(log2_val, cub::Max());
+  max_log2 = __shfl_sync(0xffffffff, max_log2, 0);
 
-  return roundToPowerOf2(max_val) / get_fp8_max_pow_2(__NV_E4M3);
+  // Round to nearest integer
+  float rounded_log2 = ceilf(max_log2);
+
+  // For E4M3, subtract log2(256.0) = 8 directly
+  float scale_log2 = rounded_log2 - 8.0f;
+
+  // Return as exponent (2^scale_log2)
+  return __powf(2.0f, static_cast<float>(scale_log2));
 }
 
 template <typename Element, int InputSize, int NumRows, int NumInnerTiles>
