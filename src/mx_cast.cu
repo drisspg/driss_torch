@@ -22,50 +22,6 @@ namespace driss_torch_kernels {
 
 using namespace cute;
 
-template <typename ElemType, typename SmemType>
-__host__ __device__ auto setup_smem_tensor(SmemType* smem_data, auto layout) {
-  using SmemLayout = decltype(layout);
-  using SmemArray = array_aligned<ElemType, cosize_v<SmemLayout>>;
-
-  SmemArray& smem_array = *reinterpret_cast<SmemArray*>(smem_data);
-  auto smem_ptr = make_smem_ptr(smem_array.data());
-  return make_tensor(smem_ptr, layout);
-}
-
-__device__ __forceinline__ float roundToPowerOf2(float v) {
-  if (v <= 0)
-    return (v == 0) ? 1.0f : 0.0f;
-
-  int exp;
-  float mantissa = frexpf(v, &exp);
-
-  // If mantissa is exactly 0.5, we're already at a power of 2
-  if (mantissa == 0.5f) {
-    return v;
-  }
-
-  // Check if we should round up or down
-  if (mantissa > 0.5f) {
-    exp++; // Round up
-  }
-
-  // Return 2^exp
-  return ldexpf(1.0f, exp - 1);
-}
-
-__device__ __forceinline__ float
-get_fp8_max_pow_2(__nv_fp8_interpretation_t fp8_dtype) {
-  switch (fp8_dtype) {
-  case __NV_E4M3:
-    return 256.0f;
-    // Todo fix
-  case __NV_E5M2:
-    return 57344.0f;
-  default:
-    return 0.0f; // Invalid dtype
-  }
-}
-
 template <typename inpt_type>
 __device__ __forceinline__ __nv_fp8_storage_t
 convert_to_fp8(inpt_type scaled_input, __nv_fp8_interpretation_t fp8_dtype) {
@@ -74,31 +30,24 @@ convert_to_fp8(inpt_type scaled_input, __nv_fp8_interpretation_t fp8_dtype) {
 }
 
 __device__ __forceinline__ float compute_row_scales(const float abs_val, int row_idx, int col_idx, auto num_rows) {
-  typedef cub::WarpReduce<float> WarpReduce;
+  typedef cub::WarpReduce<int> WarpReduce;  // Changed to int reduction
   __shared__ typename WarpReduce::TempStorage temp_storage[num_rows];
 
-  // Perform reduction in log2 space
-  float log2_val = __log2f(abs_val);
-  float max_log2 = WarpReduce(temp_storage[row_idx]).Reduce(log2_val, cub::Max());
+  // Compute log2 and ceiling to next integer immediately
+  float log2_val_float = log2f(abs_val);
+  int log2_val = (int)ceilf(log2_val_float);  // Round up to next integer
+
+  // Perform reduction using integers
+  int max_log2 = WarpReduce(temp_storage[row_idx]).Reduce(log2_val, cub::Max());
   max_log2 = __shfl_sync(0xffffffff, max_log2, 0);
 
-  // Round to nearest integer
-  float rounded_log2 = ceilf(max_log2);
+  // For E4M3, subtract log2(256.0) = 8 as integer
+  int scale_log2 = max_log2 - 8;
 
-  // For E4M3, subtract log2(256.0) = 8 directly
-  float scale_log2 = rounded_log2 - 8.0f;
-
-  // Return as exponent (2^scale_log2)
-  return __powf(2.0f, static_cast<float>(scale_log2));
+  // Convert back to float only at the end
+  return powf(2.0f, (float)scale_log2);
 }
 
-template <typename Element, int InputSize, int NumRows, int NumInnerTiles>
-struct SharedMemory {
-  // Expanded to hold multiple tiles of input data
-  Element input_data[NumInnerTiles * sizeof(Element) * InputSize]; // Assuming up to 4 tiles, adjust as needed
-  __nv_fp8_storage_t quantized_data[NumInnerTiles * InputSize];
-  __nv_fp8_storage_t row_scales_e8m0[NumInnerTiles * NumRows];
-};
 
 template <class Element, class TensorInput, class TensorOutput,
           class TensorScale, class ThrShape, class BlockShape>
@@ -114,56 +63,44 @@ __global__ void mx_fp8_quantize_kernel(TensorInput input, TensorOutput output,
   constexpr auto num_rows = size<0>(thr_shape);
   const int num_tiles = get<0>(blck_shape)/num_rows;
 
-  __shared__ SharedMemory<Element, size(thr_shape), num_rows, num_tiles> smem;
-
-  auto smem_layout = make_layout(tile_input.shape(), LayoutRight());
-  auto smem_scale_layout = make_layout(tile_scale.shape(), LayoutRight());
-  // Input tensor
-  auto input_smem_tensor = setup_smem_tensor<Element>(smem.input_data, smem_layout);
-
-  // Output tensor
-  auto output_smem_tensor = setup_smem_tensor<__nv_fp8_storage_t>(smem.quantized_data, smem_layout);
-
-  // Scale tensors
-  auto scale_smem_tensor_e8m0 = setup_smem_tensor<__nv_fp8_storage_t>(smem.row_scales_e8m0, smem_scale_layout);
-
-  // Tile divide for inner loop
-  auto tiled_smem_tensor = tiled_divide(input_smem_tensor, thr_shape);
-  auto tiled_output_smem_tensor = tiled_divide(output_smem_tensor, thr_shape);
-  auto tiled_scale_smem_tensor_e8m0 = tiled_divide(scale_smem_tensor_e8m0, thr_shape);
+  // Tile divide for input
+  auto tiled_input_tensor = tiled_divide(tile_input, thr_shape);
+  auto tiled_ouput_tenosr = tiled_divide(tile_output, thr_shape);
+  auto tiled_scale_tensor_e8m0 = tiled_divide(tile_scale, make_shape(get<0>(thr_shape), 1));
 
   auto row_idx = threadIdx.y;
   auto col_idx = threadIdx.x;
 
-  cooperative_copy<size(thr_shape)>(tid, tile_input, input_smem_tensor);
-
   #pragma unroll
   for (auto i = 0; i < num_tiles; i++) {
-    auto tile_tensor = tiled_smem_tensor(make_coord(_, _), i, 0);
-    auto sub_tiled_output = tiled_output_smem_tensor(make_coord(_, _), i, 0);
-    auto sub_tiled_scale_e8m0 = tiled_scale_smem_tensor_e8m0(make_coord(_, _), i, 0);
+
+    auto sub_tiled_input = tiled_input_tensor(make_coord(_, _), i, 0);
+    auto sub_tile_out = tiled_ouput_tenosr(make_coord(_, _), i, 0);
+    auto sub_tiled_scale_e8m0 = tiled_scale_tensor_e8m0(make_coord(_, _), i, 0);
+
+    auto inpt = sub_tiled_input(row_idx, col_idx);
 
     // Calculate absolute values
-    auto abs = std::abs(static_cast<float>(tile_tensor(row_idx, col_idx)));
+    auto abs = std::abs(static_cast<float>(inpt));
 
-    // Compute row scales
+    // // Compute row scales
     auto scale = compute_row_scales(abs, row_idx, col_idx, num_rows);
     __syncthreads();
 
-    // Apply scaling and convert to FP8
+    // // Apply scaling and convert to FP8
     auto inverse_scale = 1 / scale;
-    auto scaled = static_cast<float>(tile_tensor(row_idx, col_idx)) * inverse_scale;
+    auto scaled = static_cast<float>(inpt) * inverse_scale;
     auto out = convert_to_fp8(scaled, __NV_E4M3);
-    sub_tiled_output(row_idx, col_idx) = out;
 
+    // Write output directly to global memory
+    sub_tile_out(row_idx, col_idx) = out;
+
+    // Write scale directly to global memory (only one thread per row)
     if (col_idx == 0) {
       auto converted = __nv_cvt_float_to_e8m0(scale, __NV_SATFINITE, cudaRoundMode::cudaRoundPosInf);
       sub_tiled_scale_e8m0(row_idx, 0) = converted;
     }
   }
-
-  cooperative_copy<size(thr_shape)>(tid, output_smem_tensor, tile_output);
-  cooperative_copy<size(thr_shape)>(tid, scale_smem_tensor_e8m0, tile_scale);
 
 }
 
@@ -235,7 +172,7 @@ std::tuple<at::Tensor, at::Tensor> mx_fp8_quantize(at::Tensor input,
   auto thr_shape = make_shape(Int<8>{}, Int<32>{});
   dim3 gridDim(
       size<1>(tiled_tensor_input),
-      size<2>(tiled_tensor_input)); // Grid shape corresponds to modes m' and n'
+      size<2>(tiled_tensor_input));
   dim3 blockDim(size<1>(thr_shape), size<0>(thr_shape));
 
   //
@@ -244,7 +181,6 @@ std::tuple<at::Tensor, at::Tensor> mx_fp8_quantize(at::Tensor input,
   driss_torch_kernels::mx_fp8_quantize_kernel<__nv_bfloat16>
       <<<gridDim, blockDim>>>(tiled_tensor_input, tiled_tensor_ouput,
                               tiled_tensor_scale, thr_shape, block_shape);
-  // tiled_copy);
 
   // Check for CUDA errors
   C10_CUDA_CHECK(cudaGetLastError());
