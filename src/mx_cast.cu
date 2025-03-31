@@ -29,13 +29,47 @@ convert_to_fp8(inpt_type scaled_input, __nv_fp8_interpretation_t fp8_dtype) {
                                fp8_dtype);
 }
 
+// __device__ __forceinline__ float compute_row_scales(const float abs_val, int row_idx, int col_idx, auto num_rows) {
+//   typedef cub::WarpReduce<int> WarpReduce;  // Changed to int reduction
+//   __shared__ typename WarpReduce::TempStorage temp_storage[num_rows];
+
+//   // Compute log2 and ceiling to next integer immediately
+//   float log2_val_float = log2f(abs_val);
+//   int log2_val = (int)ceilf(log2_val_float);  // Round up to next integer
+
+//   // Perform reduction using integers
+//   int max_log2 = WarpReduce(temp_storage[row_idx]).Reduce(log2_val, cub::Max());
+//   max_log2 = __shfl_sync(0xffffffff, max_log2, 0);
+
+//   // For E4M3, subtract log2(256.0) = 8 as integer
+//   int scale_log2 = max_log2 - 8;
+
+//   // Convert back to float only at the end
+//   return powf(2.0f, (float)scale_log2);
+// }
+
 __device__ __forceinline__ float compute_row_scales(const float abs_val, int row_idx, int col_idx, auto num_rows) {
-  typedef cub::WarpReduce<int> WarpReduce;  // Changed to int reduction
+  typedef cub::WarpReduce<int> WarpReduce;
   __shared__ typename WarpReduce::TempStorage temp_storage[num_rows];
 
-  // Compute log2 and ceiling to next integer immediately
-  float log2_val_float = log2f(abs_val);
-  int log2_val = (int)ceilf(log2_val_float);  // Round up to next integer
+  // Extract exponent directly from float bit pattern
+  // IEEE 754 float: 1 bit sign, 8 bits exponent, 23 bits mantissa
+  int bits = __float_as_int(abs_val);
+
+  // Extract biased exponent (exponent + 127)
+  int biased_exp = (bits >> 23) & 0xFF;
+
+  // Handle denormal numbers
+  int log2_val;
+  if (biased_exp == 0) {
+    // For very small numbers or zero
+    log2_val = (abs_val == 0.0f) ? -128 : -126;
+  } else {
+    // Normal numbers: unbias the exponent (subtract 127)
+    // Ceiling the result by checking if there are any non-zero mantissa bits
+    int mantissa = bits & 0x7FFFFF;
+    log2_val = biased_exp - 127 + ((mantissa != 0) ? 1 : 0);
+  }
 
   // Perform reduction using integers
   int max_log2 = WarpReduce(temp_storage[row_idx]).Reduce(log2_val, cub::Max());
@@ -44,14 +78,24 @@ __device__ __forceinline__ float compute_row_scales(const float abs_val, int row
   // For E4M3, subtract log2(256.0) = 8 as integer
   int scale_log2 = max_log2 - 8;
 
-  // Convert back to float only at the end
-  return powf(2.0f, (float)scale_log2);
+  // Create float with exponent = scale_log2 and mantissa = 0 (equivalent to 2^scale_log2)
+  // Need to bias the exponent again (add 127)
+  int biased_scale = scale_log2 + 127;
+
+  // Clamp to valid exponent range [0, 255]
+  biased_scale = max(0, min(255, biased_scale));
+
+  // Construct the float bits
+  int result_bits = biased_scale << 23;
+
+  // Convert bits back to float
+  return __int_as_float(result_bits);
 }
 
 
 template <class Element, class TensorInput, class TensorOutput,
           class TensorScale, class ThrShape, class BlockShape>
-__global__ void mx_fp8_quantize_kernel(TensorInput input, TensorOutput output,
+__global__ __launch_bounds__(256) void mx_fp8_quantize_kernel(TensorInput input, TensorOutput output,
                                        TensorScale scale, ThrShape thr_shape, BlockShape blck_shape) {
 
   auto tid = threadIdx.x + threadIdx.y * blockDim.x;
@@ -61,7 +105,7 @@ __global__ void mx_fp8_quantize_kernel(TensorInput input, TensorOutput output,
   Tensor tile_scale = scale(make_coord(_, _), blockIdx.x, blockIdx.y);
 
   constexpr auto num_rows = size<0>(thr_shape);
-  const int num_tiles = get<0>(blck_shape)/num_rows;
+  constexpr auto num_tiles = get<0>(blck_shape)/num_rows;
 
   // Tile divide for input
   auto tiled_input_tensor = tiled_divide(tile_input, thr_shape);
@@ -79,17 +123,17 @@ __global__ void mx_fp8_quantize_kernel(TensorInput input, TensorOutput output,
     auto sub_tiled_scale_e8m0 = tiled_scale_tensor_e8m0(make_coord(_, _), i, 0);
 
     auto inpt = sub_tiled_input(row_idx, col_idx);
+    float inpt_float = __bfloat162float(inpt);
 
     // Calculate absolute values
-    auto abs = std::abs(static_cast<float>(inpt));
+    auto abs = std::abs(__bfloat162float(inpt_float));
 
     // // Compute row scales
     auto scale = compute_row_scales(abs, row_idx, col_idx, num_rows);
-    __syncthreads();
 
     // // Apply scaling and convert to FP8
-    auto inverse_scale = 1 / scale;
-    auto scaled = static_cast<float>(inpt) * inverse_scale;
+    float inverse_scale = __frcp_rn(scale); // Fast reciprocal
+    float scaled = static_cast<float>(inpt_float) * inverse_scale;
     auto out = convert_to_fp8(scaled, __NV_E4M3);
 
     // Write output directly to global memory
