@@ -32,40 +32,6 @@ __host__ __device__ auto setup_smem_tensor(SmemType* smem_data, auto layout) {
   return make_tensor(smem_ptr, layout);
 }
 
-__device__ __forceinline__ float roundToPowerOf2(float v) {
-  if (v <= 0)
-    return (v == 0) ? 1.0f : 0.0f;
-
-  int exp;
-  float mantissa = frexpf(v, &exp);
-
-  // If mantissa is exactly 0.5, we're already at a power of 2
-  if (mantissa == 0.5f) {
-    return v;
-  }
-
-  // Check if we should round up or down
-  if (mantissa > 0.5f) {
-    exp++; // Round up
-  }
-
-  // Return 2^exp
-  return ldexpf(1.0f, exp - 1);
-}
-
-__device__ __forceinline__ float
-get_fp8_max_pow_2(__nv_fp8_interpretation_t fp8_dtype) {
-  switch (fp8_dtype) {
-  case __NV_E4M3:
-    return 256.0f;
-    // Todo fix
-  case __NV_E5M2:
-    return 57344.0f;
-  default:
-    return 0.0f; // Invalid dtype
-  }
-}
-
 template <typename inpt_type>
 __device__ __forceinline__ __nv_fp8_storage_t
 convert_to_fp8(inpt_type scaled_input, __nv_fp8_interpretation_t fp8_dtype) {
@@ -73,23 +39,49 @@ convert_to_fp8(inpt_type scaled_input, __nv_fp8_interpretation_t fp8_dtype) {
                                fp8_dtype);
 }
 
+
 __device__ __forceinline__ float compute_row_scales(const float abs_val, int row_idx, int col_idx, auto num_rows) {
-  typedef cub::WarpReduce<float> WarpReduce;
+  typedef cub::WarpReduce<int> WarpReduce;
   __shared__ typename WarpReduce::TempStorage temp_storage[num_rows];
 
-  // Perform reduction in log2 space
-  float log2_val = __log2f(abs_val);
-  float max_log2 = WarpReduce(temp_storage[row_idx]).Reduce(log2_val, cub::Max());
+  // Extract exponent directly from float bit pattern
+  // IEEE 754 float: 1 bit sign, 8 bits exponent, 23 bits mantissa
+  int bits = __float_as_int(abs_val);
+
+  // Extract biased exponent (exponent + 127)
+  int biased_exp = (bits >> 23) & 0xFF;
+
+  // Handle denormal numbers
+  int log2_val;
+  if (biased_exp == 0) {
+    // For very small numbers or zero
+    log2_val = (abs_val == 0.0f) ? -128 : -126;
+  } else {
+    // Normal numbers: unbias the exponent (subtract 127)
+    // Ceiling the result by checking if there are any non-zero mantissa bits
+    int mantissa = bits & 0x7FFFFF;
+    log2_val = biased_exp - 127 + ((mantissa != 0) ? 1 : 0);
+  }
+
+  // Perform reduction using integers
+  int max_log2 = WarpReduce(temp_storage[row_idx]).Reduce(log2_val, cub::Max());
   max_log2 = __shfl_sync(0xffffffff, max_log2, 0);
 
-  // Round to nearest integer
-  float rounded_log2 = ceilf(max_log2);
+  // For E4M3, subtract log2(256.0) = 8 as integer
+  int scale_log2 = max_log2 - 8;
 
-  // For E4M3, subtract log2(256.0) = 8 directly
-  float scale_log2 = rounded_log2 - 8.0f;
+  // Create float with exponent = scale_log2 and mantissa = 0 (equivalent to 2^scale_log2)
+  // Need to bias the exponent again (add 127)
+  int biased_scale = scale_log2 + 127;
 
-  // Return as exponent (2^scale_log2)
-  return __powf(2.0f, static_cast<float>(scale_log2));
+  // Clamp to valid exponent range [0, 255]
+  biased_scale = max(0, min(255, biased_scale));
+
+  // Construct the float bits
+  int result_bits = biased_scale << 23;
+
+  // Convert bits back to float
+  return __int_as_float(result_bits);
 }
 
 template <typename Element, int InputSize, int NumRows, int NumInnerTiles>
@@ -148,13 +140,13 @@ __global__ void mx_fp8_quantize_kernel(TensorInput input, TensorOutput output,
 
     // Compute row scales
     auto scale = compute_row_scales(abs, row_idx, col_idx, num_rows);
-    __syncthreads();
 
-    // Apply scaling and convert to FP8
-    auto inverse_scale = 1 / scale;
+    // // Apply scaling and convert to FP8
+    float inverse_scale = __frcp_rn(scale); // Fast reciprocal
     auto scaled = static_cast<float>(tile_tensor(row_idx, col_idx)) * inverse_scale;
     auto out = convert_to_fp8(scaled, __NV_E4M3);
     sub_tiled_output(row_idx, col_idx) = out;
+    __syncthreads();
 
     if (col_idx == 0) {
       auto converted = __nv_cvt_float_to_e8m0(scale, __NV_SATFINITE, cudaRoundMode::cudaRoundPosInf);
