@@ -94,7 +94,7 @@ struct SharedMemory {
 
 template <class Element, class TensorInput, class TensorOutput,
           class TensorScale, class ThrShape, class BlockShape>
-__global__ void mx_fp8_quantize_kernel(TensorInput input, TensorOutput output,
+__global__ __launch_bounds__(256) void mx_fp8_quantize_kernel(TensorInput input, TensorOutput output,
                                        TensorScale scale, ThrShape thr_shape, BlockShape blck_shape) {
 
   auto tid = threadIdx.x + threadIdx.y * blockDim.x;
