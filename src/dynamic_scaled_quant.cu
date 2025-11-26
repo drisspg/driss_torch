@@ -33,7 +33,8 @@ __device__ __forceinline__ inpt_type block_max(inpt_type const thread_data) {
       cub::BlockReduce<inpt_type, BLOCK_SIZE,
                        cub::BLOCK_REDUCE_RAKING_COMMUTATIVE_ONLY>;
   __shared__ typename BlockReduce::TempStorage temp_storage;
-  return BlockReduce(temp_storage).Reduce(thread_data, cub::Max());
+  return BlockReduce(temp_storage).Reduce(
+      thread_data, ::cuda::maximum<inpt_type>{});
 }
 
 /*

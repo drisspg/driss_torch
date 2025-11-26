@@ -30,9 +30,45 @@ set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH};${PT_CMAKE_PREFIX})
 find_package(Torch REQUIRED CONFIG)
 
 # ---- cuDNN dependency setup ----
-# Set system-installed cuDNN paths directly
-set(CUDNN_INCLUDE_DIR "/usr/include" CACHE PATH "cuDNN include directory")
-set(CUDNN_LIBRARY "/usr/lib64/libcudnn.so" CACHE FILEPATH "cuDNN library")
+# Find cuDNN library and include directory automatically
+find_path(CUDNN_INCLUDE_DIR cudnn.h
+    HINTS
+        ${CUDNN_ROOT}
+        ${CUDA_TOOLKIT_ROOT_DIR}
+        $ENV{CUDNN_ROOT}
+        $ENV{CUDA_HOME}
+    PATH_SUFFIXES include
+    PATHS
+        /usr/include
+        /usr/local/include
+        /usr/local/cuda/include
+)
+
+find_library(CUDNN_LIBRARY
+    NAMES cudnn libcudnn
+    HINTS
+        ${CUDNN_ROOT}
+        ${CUDA_TOOLKIT_ROOT_DIR}
+        $ENV{CUDNN_ROOT}
+        $ENV{CUDA_HOME}
+    PATH_SUFFIXES lib64 lib lib/x86_64-linux-gnu
+    PATHS
+        /usr/lib
+        /usr/lib64
+        /usr/local/lib
+        /usr/local/cuda/lib64
+)
+
+if(NOT CUDNN_INCLUDE_DIR)
+    message(FATAL_ERROR "Could not find cudnn.h. Set CUDNN_ROOT or ensure cuDNN is installed.")
+endif()
+
+if(NOT CUDNN_LIBRARY)
+    message(FATAL_ERROR "Could not find cuDNN library. Set CUDNN_ROOT or ensure cuDNN is installed.")
+endif()
+
+message(STATUS "Found cuDNN include: ${CUDNN_INCLUDE_DIR}")
+message(STATUS "Found cuDNN library: ${CUDNN_LIBRARY}")
 
 # Add cuDNN frontend from submodule
 set(CUDNN_FRONTEND_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/cudnn-frontend/include" CACHE PATH "cuDNN frontend include directory")
