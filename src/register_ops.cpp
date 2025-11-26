@@ -8,9 +8,14 @@
 #include "sweep_mm.h"
 #include "mx_fp8_bf16.h"
 #include "mx_cast.h"
+#include "keyed_random.h"
 
 TORCH_LIBRARY(DrissTorch, m) {
   m.impl_abstract_pystub("driss_torch.abstract_impls");
+  // Keyed Random
+  m.def("keyed_random_uniform(Tensor keys, int cols) -> Tensor");
+  m.impl("keyed_random_uniform", c10::DispatchKey::CUDA, TORCH_FN(driss_torch::keyed_random_uniform));
+
   //  Saturated cast func from bf16 to fp8 types
   m.def("saturated_cast(Tensor input, Tensor scale, ScalarType dtype, bool "
         "transpose) -> Tensor");

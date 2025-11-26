@@ -11,6 +11,7 @@
 #include <cuda_fp8.h>
 #include <cuda_runtime.h>
 #include <cub/cub.cuh>
+#include <cub/warp/warp_reduce.cuh>
 
 // CUTLASS includes
 #include <cute/tensor.hpp>
@@ -64,7 +65,7 @@ __device__ __forceinline__ float compute_row_scales(const float abs_val, int row
   }
 
   // Perform reduction using integers
-  int max_log2 = WarpReduce(temp_storage[row_idx]).Reduce(log2_val, cub::Max());
+  int max_log2 = WarpReduce(temp_storage[row_idx]).Reduce(log2_val, ::cuda::maximum<int>{});
   max_log2 = __shfl_sync(0xffffffff, max_log2, 0);
 
   // For E4M3, subtract log2(256.0) = 8 as integer
