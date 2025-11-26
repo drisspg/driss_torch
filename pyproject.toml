@@ -37,7 +37,7 @@ cmake.build-type = "RelWithDebInfo"
 build-dir = "build"
 
 [tool.scikit-build.cmake.define]
-TORCH_CUDA_ARCH_LIST="9.0"
+TORCH_CUDA_ARCH_LIST="10.0a"
 
 [tool.usort]
 first_party_detection = false
